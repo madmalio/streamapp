@@ -74,7 +74,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (bitrate == 'Auto') {
         // Run speed test
         final speedMbps = await api.runSpeedTest();
-        print('Speed Test Result: ${speedMbps.toStringAsFixed(2)} Mbps');
+        debugPrint('Speed Test Result: ${speedMbps.toStringAsFixed(2)} Mbps');
 
         if (speedMbps > 12.0) {
           targetBitrate = '8M';
@@ -85,7 +85,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         } else {
           targetBitrate = '1.5M';
         }
-        print('Auto Selected Bitrate: $targetBitrate');
+        debugPrint('Auto Selected Bitrate: $targetBitrate');
       }
 
       String newUrl;
@@ -138,28 +138,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     const MaterialPositionIndicator(),
                     const Spacer(),
                     const MaterialDesktopVolumeButton(),
-                    PopupMenuButton<String>(
-                      icon: const Icon(Icons.settings, color: Colors.white),
-                      color: Colors.black87,
-                      tooltip: 'Quality',
-                      offset: const Offset(0, -200),
-                      onSelected: _changeQuality,
-                      itemBuilder: (context) => _qualityOptions.map((value) {
-                        String text = value == 'Original' ? 'Original (Direct)' : '${value.replaceAll('M', '')} Mbps';
-                        if (value == 'Auto') {
-                          text = 'Auto';
-                        }
-                        return PopupMenuItem(
-                          value: value,
-                          child: Text(
-                            text,
-                            style: TextStyle(
-                              color: _currentBitrate == value ? Colors.blue : Colors.white,
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                    ),
                     const MaterialDesktopFullscreenButton(),
                   ],
                 ),
@@ -169,28 +147,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     const MaterialPositionIndicator(),
                     const Spacer(),
                     const MaterialDesktopVolumeButton(),
-                    PopupMenuButton<String>(
-                      icon: const Icon(Icons.settings, color: Colors.white),
-                      color: Colors.black87,
-                      tooltip: 'Quality',
-                      offset: const Offset(0, -200),
-                      onSelected: _changeQuality,
-                      itemBuilder: (context) => _qualityOptions.map((value) {
-                        String text = value == 'Original' ? 'Original (Direct)' : '${value.replaceAll('M', '')} Mbps';
-                        if (value == 'Auto') {
-                          text = 'Auto';
-                        }
-                        return PopupMenuItem(
-                          value: value,
-                          child: Text(
-                            text,
-                            style: TextStyle(
-                              color: _currentBitrate == value ? Colors.blue : Colors.white,
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                    ),
                     const MaterialDesktopFullscreenButton(),
                   ],
                 ),
@@ -202,19 +158,57 @@ class _PlayerScreenState extends State<PlayerScreen> {
               top: 40,
               left: 40,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 decoration: BoxDecoration(
-                  color: Colors.black54,
+                  color: Colors.black.withOpacity(0.7),
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: Text(
-                  widget.channel.name,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.channel.name,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    Text(
+                      'Quality: $_currentBitrate',
+                      style: const TextStyle(
+                        color: Colors.grey,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
                 ),
+              ),
+            ),
+            // Quality Selector Overlay (Top Right)
+            Positioned(
+              top: 40,
+              right: 40,
+              child: PopupMenuButton<String>(
+                icon: const Icon(Icons.settings, color: Colors.white, size: 32),
+                color: Colors.black87,
+                tooltip: 'Quality',
+                onSelected: _changeQuality,
+                itemBuilder: (context) => _qualityOptions.map((value) {
+                  String text = value == 'Original' ? 'Original (Direct)' : '${value.replaceAll('M', '')} Mbps';
+                  if (value == 'Auto') {
+                    text = 'Auto';
+                  }
+                  return PopupMenuItem(
+                    value: value,
+                    child: Text(
+                      text,
+                      style: TextStyle(
+                        color: _currentBitrate == value ? Colors.blue : Colors.white,
+                      ),
+                    ),
+                  );
+                }).toList(),
               ),
             ),
           ],

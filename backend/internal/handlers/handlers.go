@@ -731,13 +731,16 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	playlistPath := filepath.ToSlash(filepath.Join(tempDir, "stream.m3u8"))
 	segmentPath := filepath.ToSlash(filepath.Join(tempDir, "segment_%03d.ts"))
 
-	// Robust NVIDIA NVENC pipeline with strict stream mapping and monotonic timestamps
+	// Robust NVIDIA CUVID hardware pipeline
 	args := []string{
-		"-hwaccel", "cuda", // Force NVIDIA hardware decoding
-		"-hwaccel_output_format", "cuda", // Keep decoded frames in VRAM for zero-copy
+		"-hwaccel", "cuda",
+		"-hwaccel_output_format", "cuda",
+		"-c:v", "mpeg2_cuvid", // Force NVIDIA Hardware Decode for ATSC 1.0
+		"-deint", "2", // Hardware deinterlace inside the decoder (adaptive)
+		"-drop_second_field", "1", // Drop every other field to maintain 30fps instead of 60fps
 		"-fflags", "+genpts+discardcorrupt+igndts+nobuffer", // Add nobuffer to reduce latency
-		"-analyzeduration", "1000000", // Only analyze 1 second of video
-		"-probesize", "5000000", // Only buffer 5MB for probing
+		"-analyzeduration", "3000000", // 3 seconds
+		"-probesize", "15000000", // 15MB to guarantee stream detection for hardware decoder
 		"-i", streamURL,
 		"-map", "0:v:0", // Strictly map only the primary video stream
 		"-map", "0:a:0", // Strictly map only the primary audio stream
@@ -745,8 +748,7 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 		"-c:v", "h264_nvenc",
 		"-preset", "p1",
 		"-profile:v", "main", // Universal profile supported by almost all players
-		"-vf", "yadif_cuda=0:-1:0,scale_cuda=format=yuv420p", // Hardware deinterlace and scale entirely on GPU
-		"-fps_mode", "cfr", // Force Constant Frame Rate to guarantee perfect monotonic timestamps
+		"-vf", "scale_cuda=format=yuv420p", // Scale entirely on GPU
 		"-af", "aresample=async=1", // Force audio sync to video timestamps
 		"-b:v", bitrate,
 		"-maxrate", bitrate,
