@@ -1,0 +1,14 @@
+# Node.js
+node_modules/
+dist/
+build/
+.env
+
+# Go
+backend/server.exe
+backend/server
+*.exe
+
+# IDE
+.vscode/
+.idea/
