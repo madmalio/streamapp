@@ -1,12 +1,9 @@
 package main
 
 import (
-	"embed"
-	"io/fs"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -16,9 +13,7 @@ import (
 	"streamapp/backend/internal/handlers"
 )
 
-// This tells Go to pull the compiled frontend files directly into the server binary
-//go:embed all:dist
-var frontendFS embed.FS
+// We no longer embed the frontend since it's a separate Flutter app
 
 func main() {
 	// Initialize SQLite database
@@ -50,6 +45,9 @@ func main() {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{"status": "healthy", "service": "streamapp backend"}`))
 		})
+		
+		// Speed Test (Used by Flutter for Auto Quality)
+		api.Get("/speedtest", handlers.SpeedTest)
 
 		// Playlists
 		api.Get("/playlists", handlers.GetPlaylists)
@@ -67,27 +65,18 @@ func main() {
 		api.Get("/epg/live", handlers.GetLiveEPG)
 		api.Post("/epg/sync", handlers.SyncEPGHandler)
 
-		// Streaming Proxy
-		api.Get("/streams/proxy", handlers.ProxyStream)
+		// Streaming Endpoints
+		api.Get("/streams/play", handlers.PlayStream)
 		api.Get("/streams/start", handlers.StartHLSStream)
+		api.Get("/streams/stop", handlers.StopHLSStream)
+		api.Get("/streams/stop_all", handlers.StopAllStreams)
 		api.Get("/streams/hls/{id}/*", handlers.ServeHLSSegments)
 	})
 
-	// Static routing rules to serve the embedded Vite interface
-	publicFS, err := fs.Sub(frontendFS, "dist")
-	if err != nil {
-		log.Fatalf("Failed to initialize embedded frontend filesystem: %v", err)
-	}
-
-	fileServer := http.FileServer(http.FS(publicFS))
-	
+	// Fallback route for undefined endpoints
 	r.HandleFunc("/*", func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, ".") {
-			fileServer.ServeHTTP(w, r)
-			return
-		}
-		r.URL.Path = "/"
-		fileServer.ServeHTTP(w, r)
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("404 Not Found"))
 	})
 
 	port := os.Getenv("PORT")

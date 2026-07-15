@@ -12,16 +12,32 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 	"streamapp/backend/internal/database"
 	"streamapp/backend/internal/models"
 	"streamapp/backend/internal/parser"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
+
+// SpeedTest generates a 5MB payload of random (or zeroes) bytes
+// so the Flutter client can measure its connection speed.
+func SpeedTest(w http.ResponseWriter, r *http.Request) {
+	// 5 Megabytes
+	size := 5 * 1024 * 1024
+	payload := make([]byte, size)
+	
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(size))
+	
+	// Just write zeroes. The client only cares about download time.
+	w.Write(payload)
+}
 
 type HLSSession struct {
 	ID           string
@@ -43,7 +59,7 @@ func init() {
 			hlsSessionsMu.Lock()
 			now := time.Now()
 			for id, sess := range hlsSessions {
-				if now.Sub(sess.LastAccessed) > 15*time.Second {
+				if now.Sub(sess.LastAccessed) > 60*time.Second {
 					fmt.Printf("[HLS Manager] Session %s timed out, cleaning up...\n", id)
 					sess.Cancel()
 					go func(dir string) {
@@ -328,7 +344,7 @@ func GetLiveEPG(w http.ResponseWriter, r *http.Request) {
 		SELECT channel_id, title, description, start_time, end_time 
 		FROM epg_programs 
 		WHERE start_time <= ? AND end_time > ?`
-	
+
 	rows, err := database.DB.Query(currentQuery, now, now)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -366,7 +382,7 @@ func GetLiveEPG(w http.ResponseWriter, r *http.Request) {
 		FROM epg_programs 
 		WHERE start_time > ? 
 		ORDER BY start_time ASC`
-	
+
 	nextRows, err := database.DB.Query(nextQuery, now)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -656,237 +672,20 @@ func (fw flushWriter) Write(p []byte) (n int, err error) {
 	return
 }
 
-// ProxyStream proxies HTTP video streams to bypass browser CORS blocks and optionally transcodes to H.264 (e.g. for HDHomeRun).
-func ProxyStream(w http.ResponseWriter, r *http.Request) {
+// PlayStream returns the raw HDHomeRun URL for the native app to play directly
+func PlayStream(w http.ResponseWriter, r *http.Request) {
 	streamURL := r.URL.Query().Get("url")
 	if streamURL == "" {
 		writeError(w, http.StatusBadRequest, "url parameter is required")
 		return
 	}
 
-	transcode := r.URL.Query().Get("transcode") == "true"
-
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-
-	if transcode {
-		w.Header().Set("Content-Type", "video/mp2t")
-
-		// 1. Fetch the input stream from HDHomeRun in Go
-		req, err := http.NewRequestWithContext(r.Context(), "GET", streamURL, nil)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		req.Header.Set("User-Agent", r.UserAgent())
-
-		client := &http.Client{}
-		resp, err := client.Do(req)
-		if err != nil {
-			writeError(w, http.StatusBadGateway, "failed to reach tuner: "+err.Error())
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			writeError(w, resp.StatusCode, "tuner returned error status: "+resp.Status)
-			return
-		}
-
-		ctx, cancel := context.WithCancel(r.Context())
-		defer cancel()
-
-		var cmd *exec.Cmd
-		var stdin io.WriteCloser
-		var stdout io.ReadCloser
-		var stderr io.ReadCloser
-		var selectedEncoder string
-
-		// Hardware-accelerated and software fallback encoders to test
-		encodersToTry := []string{"h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "libx264"}
-
-		for _, encoder := range encodersToTry {
-			fmt.Printf("[Transcoder] Probing H.264 encoder: %s\n", encoder)
-
-			args := []string{
-				"-hwaccel", "auto",
-				"-fflags", "+nobuffer+genpts", // Minimize input buffering latency and generate missing timestamps
-				"-f", "mpegts", // Force input format to MPEG-TS
-				"-i", "pipe:0", // Read from Go network pipe
-			}
-
-			// Add encoder-specific low-latency tuning flags
-			if encoder == "libx264" {
-				args = append(args,
-					"-c:v", "libx264",
-					"-preset", "ultrafast",
-					"-tune", "zerolatency",
-					"-profile:v", "baseline",
-					"-level", "3.0",
-				)
-			} else {
-				args = append(args, "-c:v", encoder)
-				if encoder == "h264_nvenc" {
-					args = append(args, "-preset", "p1", "-tune", "ull") // Ultra-low latency NVENC
-				}
-				if encoder == "h264_qsv" {
-					args = append(args, "-preset", "veryfast")
-				}
-			}
-
-			// Common transcoding filter and output parameters
-			args = append(args,
-				"-threads", "0", // Use all CPU cores if software fallbacks kick in
-				"-vf", "bwdif=0:-1:0,scale=-2:720:flags=fast_bilinear", // Deinterlace live OTA streams and scale to 720p
-				"-pix_fmt", "yuv420p", // Force browser-friendly pixel format
-				"-g", "30",
-				"-keyint_min", "30",
-				"-sc_threshold", "0",
-				"-c:a", "aac",
-				"-ac", "2",
-				"-b:a", "128k",
-				"-ar", "44100",
-				"-f", "mpegts",
-				"-mpegts_flags", "+pat_pmt_at_frames",
-				"pipe:1",
-			)
-
-			trialCmd := exec.CommandContext(ctx, "ffmpeg", args...)
-
-			trialStdin, err := trialCmd.StdinPipe()
-			if err != nil {
-				continue
-			}
-
-			trialStdout, err := trialCmd.StdoutPipe()
-			if err != nil {
-				trialStdin.Close()
-				continue
-			}
-
-			trialStderr, err := trialCmd.StderrPipe()
-			if err != nil {
-				trialStdin.Close()
-				trialStdout.Close()
-				continue
-			}
-
-			if err := trialCmd.Start(); err != nil {
-				trialStdin.Close()
-				trialStdout.Close()
-				trialStderr.Close()
-				continue
-			}
-
-			// Monitor the encoder process for 300ms to catch hardware unsupported crashes
-			exitChan := make(chan error, 1)
-			go func() {
-				exitChan <- trialCmd.Wait()
-			}()
-
-			select {
-			case err := <-exitChan:
-				fmt.Printf("[Transcoder] Encoder %s unsupported or exited immediately: %v\n", encoder, err)
-				trialStdin.Close()
-				trialStdout.Close()
-				trialStderr.Close()
-				continue
-			case <-time.After(300 * time.Millisecond):
-				fmt.Printf("[Transcoder] Successfully initialized encoder: %s\n", encoder)
-				cmd = trialCmd
-				stdin = trialStdin
-				stdout = trialStdout
-				stderr = trialStderr
-				selectedEncoder = encoder
-
-				// Start streaming response body from Go client to FFmpeg stdin
-				go func() {
-					defer stdin.Close()
-					buf := make([]byte, 128*1024) // 128KB network buffer
-					_, _ = io.CopyBuffer(stdin, resp.Body, buf)
-				}()
-
-				// Run Wait in background so exitChan doesn't leak
-				go func() {
-					err := <-exitChan
-					fmt.Printf("[Transcoder] Encoder %s stopped: %v\n", selectedEncoder, err)
-				}()
-				break
-			}
-			if cmd != nil {
-				break
-			}
-		}
-
-		if cmd == nil {
-			writeError(w, http.StatusInternalServerError, "all H.264 video encoders failed to initialize")
-			return
-		}
-
-		// Goroutine to drain stderr logs
-		go func() {
-			buf := make([]byte, 2048)
-			for {
-				n, err := stderr.Read(buf)
-				if n > 0 {
-					fmt.Printf("[FFMPEG] %s", string(buf[:n]))
-				}
-				if err != nil {
-					break
-				}
-			}
-		}()
-
-		var writer io.Writer = w
-		if flusher, ok := w.(http.Flusher); ok {
-			writer = flushWriter{
-				w: w,
-				f: flusher,
-			}
-		}
-
-		// Direct stdout pipe copy to HTTP ResponseWriter
-		_, _ = io.Copy(writer, stdout)
-		return
-	}
-
-	// Normal non-transcoded proxy stream
-	req, err := http.NewRequestWithContext(r.Context(), "GET", streamURL, nil)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	req.Header.Set("User-Agent", r.UserAgent())
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "failed to reach stream target: "+err.Error())
-		return
-	}
-	defer resp.Body.Close()
-
-	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
-	if length := resp.Header.Get("Content-Length"); length != "" {
-		w.Header().Set("Content-Length", length)
-	}
-
-	w.WriteHeader(resp.StatusCode)
-
-	var writer io.Writer = w
-	if flusher, ok := w.(http.Flusher); ok {
-		writer = flushWriter{
-			w: w,
-			f: flusher,
-		}
-	}
-
-	_, _ = io.Copy(writer, resp.Body)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"stream_url": streamURL,
+	})
 }
 
-// StartHLSStream starts an HLS transcoding session for the given stream URL and returns the playlist URL.
+// StartHLSStream starts an HLS transcoding session with a specific bitrate cap.
 func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	streamURL := r.URL.Query().Get("url")
 	if streamURL == "" {
@@ -894,7 +693,14 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash := sha256.Sum256([]byte(streamURL))
+	bitrate := r.URL.Query().Get("bitrate")
+	if bitrate == "" {
+		bitrate = "4M" // Default to 4 Mbps if not specified
+	}
+
+	// Create unique ID based on URL and bitrate
+	hashInput := fmt.Sprintf("%s-%s", streamURL, bitrate)
+	hash := sha256.Sum256([]byte(hashInput))
 	id := hex.EncodeToString(hash[:])[:16]
 
 	hlsSessionsMu.Lock()
@@ -909,6 +715,7 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tempDir := filepath.Join(os.TempDir(), "streamapp_hls", id)
+	os.RemoveAll(tempDir) // CRITICAL: Purge any left-over chunks from previous crashes
 	os.MkdirAll(tempDir, 0755)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -921,158 +728,81 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	hlsSessions[id] = sess
 	hlsSessionsMu.Unlock()
 
-	// 1. Fetch the input stream from HDHomeRun in Go
-	req, err := http.NewRequestWithContext(ctx, "GET", streamURL, nil)
-	if err != nil {
-		sess.Cancel()
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	req.Header.Set("User-Agent", r.UserAgent())
+	playlistPath := filepath.ToSlash(filepath.Join(tempDir, "stream.m3u8"))
+	segmentPath := filepath.ToSlash(filepath.Join(tempDir, "segment_%03d.ts"))
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		sess.Cancel()
-		writeError(w, http.StatusBadGateway, "failed to reach tuner: "+err.Error())
-		return
-	}
-
-	var cmd *exec.Cmd
-	var stdin io.WriteCloser
-	var stderr io.ReadCloser
-	var selectedEncoder string
-
-	encodersToTry := []string{"h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "libx264"}
-
-	for _, encoder := range encodersToTry {
-		fmt.Printf("[HLS Transcoder] Probing H.264 encoder: %s\n", encoder)
-
-		args := []string{
-			"-hwaccel", "auto",
-			"-fflags", "+nobuffer+genpts",
-			"-f", "mpegts",
-			"-i", "pipe:0",
-		}
-
-		if encoder == "libx264" {
-			args = append(args,
-				"-c:v", "libx264",
-				"-preset", "ultrafast",
-				"-tune", "zerolatency",
-				"-profile:v", "baseline",
-				"-level", "3.0",
-			)
-		} else {
-			args = append(args, "-c:v", encoder)
-			if encoder == "h264_nvenc" {
-				args = append(args, "-preset", "p1", "-tune", "ull")
-			}
-			if encoder == "h264_qsv" {
-				args = append(args, "-preset", "veryfast")
-			}
-		}
-
-		args = append(args,
-			"-threads", "0",
-			"-vf", "bwdif=0:-1:0,scale=-2:720:flags=fast_bilinear",
-			"-pix_fmt", "yuv420p",
-			"-g", "30",
-			"-keyint_min", "30",
-			"-sc_threshold", "0",
-			"-c:a", "aac",
-			"-ac", "2",
-			"-b:a", "128k",
-			"-ar", "44100",
-			"-f", "hls",
-			"-hls_time", "2",
-			"-hls_list_size", "5",
-			"-hls_flags", "delete_segments+append_list",
-			"-hls_segment_filename", filepath.Join(tempDir, "segment_%03d.ts"),
-			filepath.Join(tempDir, "stream.m3u8"),
-		)
-
-		trialCmd := exec.CommandContext(ctx, "ffmpeg", args...)
-
-		trialStdin, err := trialCmd.StdinPipe()
-		if err != nil {
-			continue
-		}
-
-		trialStderr, err := trialCmd.StderrPipe()
-		if err != nil {
-			trialStdin.Close()
-			continue
-		}
-
-		if err := trialCmd.Start(); err != nil {
-			trialStdin.Close()
-			trialStderr.Close()
-			continue
-		}
-
-		exitChan := make(chan error, 1)
-		go func() {
-			exitChan <- trialCmd.Wait()
-		}()
-
-		select {
-		case err := <-exitChan:
-			fmt.Printf("[HLS Transcoder] Encoder %s unsupported or exited immediately: %v\n", encoder, err)
-			trialStdin.Close()
-			trialStderr.Close()
-			continue
-		case <-time.After(300 * time.Millisecond):
-			fmt.Printf("[HLS Transcoder] Successfully initialized encoder: %s\n", encoder)
-			cmd = trialCmd
-			stdin = trialStdin
-			stderr = trialStderr
-			selectedEncoder = encoder
-
-			go func() {
-				defer stdin.Close()
-				defer resp.Body.Close()
-				buf := make([]byte, 128*1024)
-				_, _ = io.CopyBuffer(stdin, resp.Body, buf)
-			}()
-
-			go func() {
-				err := <-exitChan
-				fmt.Printf("[HLS Transcoder] Encoder %s stopped: %v\n", selectedEncoder, err)
-			}()
-			break
-		}
-		if cmd != nil {
-			break
-		}
+	// Robust NVIDIA NVENC pipeline with strict stream mapping and monotonic timestamps
+	args := []string{
+		"-hwaccel", "cuda", // Force NVIDIA hardware decoding
+		"-hwaccel_output_format", "cuda", // Keep decoded frames in VRAM for zero-copy
+		"-fflags", "+genpts+discardcorrupt+igndts+nobuffer", // Add nobuffer to reduce latency
+		"-analyzeduration", "1000000", // Only analyze 1 second of video
+		"-probesize", "5000000", // Only buffer 5MB for probing
+		"-i", streamURL,
+		"-map", "0:v:0", // Strictly map only the primary video stream
+		"-map", "0:a:0", // Strictly map only the primary audio stream
+		"-sn",           // Drop any subtitle streams that cause TS muxer drift
+		"-c:v", "h264_nvenc",
+		"-preset", "p1",
+		"-profile:v", "main", // Universal profile supported by almost all players
+		"-vf", "yadif_cuda=0:-1:0,scale_cuda=format=yuv420p", // Hardware deinterlace and scale entirely on GPU
+		"-fps_mode", "cfr", // Force Constant Frame Rate to guarantee perfect monotonic timestamps
+		"-af", "aresample=async=1", // Force audio sync to video timestamps
+		"-b:v", bitrate,
+		"-maxrate", bitrate,
+		"-bufsize", fmt.Sprintf("%s", bitrate),
+		"-g", "60", // 2 second GOP at 30fps
+		"-sc_threshold", "0",
+		"-c:a", "aac",
+		"-b:a", "128k",
+		"-ac", "2",
+		"-f", "hls",
+		"-hls_time", "2",
+		"-hls_list_size", "5",
+		"-hls_flags", "delete_segments",
+		"-hls_segment_filename", segmentPath,
+		playlistPath,
 	}
 
-	if cmd == nil {
-		sess.Cancel()
-		writeError(w, http.StatusInternalServerError, "all H.264 video encoders failed to initialize")
-		return
-	}
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	sess.Cmd = cmd
 
-	go func() {
-		buf := make([]byte, 2048)
-		for {
-			n, err := stderr.Read(buf)
-			if n > 0 {
-				fmt.Printf("[FFMPEG-HLS] %s", string(buf[:n]))
+	stderr, err := cmd.StderrPipe()
+	if err == nil {
+		go func() {
+			buf := make([]byte, 2048)
+			for {
+				n, err := stderr.Read(buf)
+				if n > 0 {
+					fmt.Printf("[FFMPEG-HLS] %s", string(buf[:n]))
+				}
+				if err != nil {
+					break
+				}
 			}
-			if err != nil {
-				break
-			}
-		}
-	}()
+		}()
+	}
+
+	if err := cmd.Start(); err != nil {
+		sess.Cancel()
+		writeError(w, http.StatusInternalServerError, "failed to start transcoder")
+		return
+	}
 
 	// Wait for the m3u8 file to be created before returning
-	for i := 0; i < 20; i++ {
+	found := false
+	for i := 0; i < 100; i++ {
 		if _, err := os.Stat(filepath.Join(tempDir, "stream.m3u8")); err == nil {
+			found = true
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+
+	if !found {
+		sess.Cancel()
+		writeError(w, http.StatusInternalServerError, "FFmpeg failed to create stream.m3u8 in time")
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -1080,29 +810,71 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ServeHLSSegments serves the requested HLS m3u8 playlist or ts segment
-func ServeHLSSegments(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	file := chi.URLParam(r, "*")
+// StopHLSStream forces a transcoding session to terminate early.
+func StopHLSStream(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "id parameter is required")
+		return
+	}
 
 	hlsSessionsMu.Lock()
 	sess, exists := hlsSessions[id]
 	if exists {
+		delete(hlsSessions, id)
+	}
+	hlsSessionsMu.Unlock()
+
+	if exists {
+		sess.Cancel()
+		os.RemoveAll(sess.Dir)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stopped"})
+}
+
+// StopAllStreams kills all running HLS sessions. Useful for freeing up tuners quickly.
+func StopAllStreams(w http.ResponseWriter, r *http.Request) {
+	hlsSessionsMu.Lock()
+	for id, sess := range hlsSessions {
+		sess.Cancel()
+		go func(dir string) {
+			os.RemoveAll(dir)
+		}(sess.Dir)
+		delete(hlsSessions, id)
+	}
+	hlsSessionsMu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "all_stopped"})
+}
+
+// ServeHLSSegments serves the m3u8 playlist and ts segments generated by FFmpeg.
+func ServeHLSSegments(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	file := chi.URLParam(r, "*")
+
+	if id == "" || file == "" {
+		writeError(w, http.StatusBadRequest, "invalid hls path")
+		return
+	}
+
+	hlsSessionsMu.Lock()
+	if sess, exists := hlsSessions[id]; exists {
 		sess.LastAccessed = time.Now()
 	}
 	hlsSessionsMu.Unlock()
 
-	if !exists {
-		http.Error(w, "stream session not found or expired", http.StatusNotFound)
-		return
+	filePath := filepath.Join(os.TempDir(), "streamapp_hls", id, file)
+
+	if strings.HasSuffix(file, ".m3u8") {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	} else if strings.HasSuffix(file, ".ts") {
+		w.Header().Set("Content-Type", "video/mp2t")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
 	}
 
-	// Disable caching for the playlist and chunks
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-
-	filePath := filepath.Join(sess.Dir, file)
 	http.ServeFile(w, r, filePath)
 }
