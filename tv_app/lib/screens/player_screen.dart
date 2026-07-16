@@ -21,7 +21,7 @@ class PlayerScreen extends StatefulWidget {
 class _PlayerScreenState extends State<PlayerScreen> {
   late Player player;
   late VideoController controller;
-  String _currentBitrate = 'Auto';
+  String _currentBitrate = 'Original';
   StreamSubscription<double>? _volumeSubscription;
 
   final List<String> _qualityOptions = [
@@ -36,11 +36,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
-    _initPlayer(widget.streamUrl);
-    _changeQuality('Auto');
+    _bootstrapPlayback();
   }
 
-  Future<void> _initPlayer(String url) async {
+  Future<void> _bootstrapPlayback() async {
+    await _initPlayer();
+
+    // Start immediately with the direct stream.
+    await player.open(Media(widget.streamUrl), play: true);
+    await player.play();
+  }
+
+  Future<void> _initPlayer() async {
     player = Player();
     controller = VideoController(player);
 
@@ -55,7 +62,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     });
   }
 
-  Future<void> _changeQuality(String bitrate) async {
+  Future<void> _changeQuality(
+    String bitrate, {
+    bool releaseTunersFirst = true,
+  }) async {
     if (bitrate == _currentBitrate && player.state.playing) return;
 
     setState(() {
@@ -64,11 +74,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     try {
       final api = Provider.of<ApiService>(context, listen: false);
-      // Free up any previous HDHomeRun tuners being held by FFmpeg
-      await api.stopAllStreams();
-      
-      // Wait 1.5 seconds for the physical HDHomeRun tuner to unlock and become available
-      await Future.delayed(const Duration(milliseconds: 1500));
+
+      if (releaseTunersFirst && bitrate != 'Original') {
+        // Free up any previous HDHomeRun tuners held by old FFmpeg sessions.
+        await api.stopAllStreams();
+        await Future.delayed(const Duration(milliseconds: 300));
+      }
       
       String targetBitrate = bitrate;
       if (bitrate == 'Auto') {
@@ -95,10 +106,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
         newUrl = await api.getStreamUrl(widget.channel.streamUrl, bitrate: targetBitrate);
       }
 
-      await player.open(Media(newUrl));
+      await player.open(Media(newUrl), play: true);
+      await player.play();
     } catch (e) {
       if (mounted) {
-        player.open(Media(widget.streamUrl));
+        await player.open(Media(widget.streamUrl), play: true);
+        await player.play();
       }
     }
   }

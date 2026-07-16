@@ -1,24 +1,46 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/guide_screen.dart';
-import 'screens/player_screen.dart';
 import 'services/api_service.dart';
+import 'services/app_settings.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
-  runApp(const StreamApp());
+
+  const defaultApiBaseUrl = String.fromEnvironment(
+    'STREAMAPP_API_BASE_URL',
+    defaultValue: 'http://192.168.4.143:8080/api',
+  );
+
+  final prefs = await SharedPreferences.getInstance();
+  final initialBaseUrl = prefs.getString(AppSettings.apiBaseUrlKey) ?? defaultApiBaseUrl;
+
+  runApp(StreamApp(initialBaseUrl: initialBaseUrl));
 }
 
 class StreamApp extends StatelessWidget {
-  const StreamApp({super.key});
+  const StreamApp({super.key, required this.initialBaseUrl});
+
+  final String initialBaseUrl;
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        Provider(create: (_) => ApiService(baseUrl: 'http://localhost:8080/api')),
+        ChangeNotifierProvider(
+          create: (_) => AppSettings(initialBaseUrl: initialBaseUrl),
+        ),
+        ProxyProvider<AppSettings, ApiService>(
+          update: (_, settings, previous) {
+            if (previous != null && previous.baseUrl == settings.baseUrl) {
+              return previous;
+            }
+            return ApiService(baseUrl: settings.baseUrl);
+          },
+        ),
       ],
       child: MaterialApp(
         title: 'StreamApp TV',

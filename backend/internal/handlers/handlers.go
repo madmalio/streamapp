@@ -53,13 +53,20 @@ var (
 )
 
 func init() {
+	sessionTimeout := 5 * time.Minute
+	if rawTimeout := strings.TrimSpace(os.Getenv("FFMPEG_HLS_SESSION_TIMEOUT_SECONDS")); rawTimeout != "" {
+		if seconds, err := strconv.Atoi(rawTimeout); err == nil && seconds > 0 {
+			sessionTimeout = time.Duration(seconds) * time.Second
+		}
+	}
+
 	go func() {
 		for {
 			time.Sleep(5 * time.Second)
 			hlsSessionsMu.Lock()
 			now := time.Now()
 			for id, sess := range hlsSessions {
-				if now.Sub(sess.LastAccessed) > 60*time.Second {
+				if now.Sub(sess.LastAccessed) > sessionTimeout {
 					fmt.Printf("[HLS Manager] Session %s timed out, cleaning up...\n", id)
 					sess.Cancel()
 					go func(dir string) {
@@ -424,6 +431,40 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	})
 }
 
+func hlsBufsizeFromBitrate(bitrate string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(bitrate))
+	if trimmed == "" {
+		return bitrate
+	}
+
+	multiplier := 1.0
+	numberPart := trimmed
+	unit := ""
+
+	if strings.HasSuffix(trimmed, "m") {
+		unit = "M"
+		numberPart = strings.TrimSuffix(trimmed, "m")
+		multiplier = 2.0
+	} else if strings.HasSuffix(trimmed, "k") {
+		unit = "k"
+		numberPart = strings.TrimSuffix(trimmed, "k")
+		multiplier = 2.0
+	} else {
+		value, err := strconv.ParseFloat(numberPart, 64)
+		if err != nil {
+			return bitrate
+		}
+		return strconv.FormatInt(int64(value*2), 10)
+	}
+
+	value, err := strconv.ParseFloat(numberPart, 64)
+	if err != nil {
+		return bitrate
+	}
+
+	return fmt.Sprintf("%g%s", value*multiplier, unit)
+}
+
 func syncPlaylistSource(pID, urlPath, pType, username, password string) error {
 	pType = strings.ToUpper(pType)
 	switch pType {
@@ -729,39 +770,45 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	hlsSessionsMu.Unlock()
 
 	playlistPath := filepath.ToSlash(filepath.Join(tempDir, "stream.m3u8"))
-	segmentPath := filepath.ToSlash(filepath.Join(tempDir, "segment_%03d.ts"))
+	segmentPath := filepath.ToSlash(filepath.Join(tempDir, "segment_%05d.ts"))
 
-	// Robust NVIDIA CUVID hardware pipeline
+	vaapiDevice := os.Getenv("FFMPEG_VAAPI_DEVICE")
+	if vaapiDevice == "" {
+		vaapiDevice = "/dev/dri/renderD128"
+	}
+
+	bufsize := hlsBufsizeFromBitrate(bitrate)
+
+	// Resilient Intel VAAPI hardware pipeline for dirty OTA MPEG-TS feeds.
 	args := []string{
-		"-hwaccel", "cuda",
-		"-hwaccel_output_format", "cuda",
-		"-c:v", "mpeg2_cuvid", // Force NVIDIA Hardware Decode for ATSC 1.0
-		"-deint", "2", // Hardware deinterlace inside the decoder (adaptive)
-		"-drop_second_field", "1", // Drop every other field to maintain 30fps instead of 60fps
-		"-fflags", "+genpts+discardcorrupt+igndts+nobuffer", // Add nobuffer to reduce latency
-		"-analyzeduration", "3000000", // 3 seconds
-		"-probesize", "15000000", // 15MB to guarantee stream detection for hardware decoder
+		"-vaapi_device", vaapiDevice,
+		"-fflags", "+genpts",
+		"-err_detect", "ignore_err",
+		"-analyzeduration", "20M",
+		"-probesize", "20M",
 		"-i", streamURL,
-		"-map", "0:v:0", // Strictly map only the primary video stream
-		"-map", "0:a:0", // Strictly map only the primary audio stream
-		"-sn",           // Drop any subtitle streams that cause TS muxer drift
-		"-c:v", "h264_nvenc",
-		"-preset", "p1",
-		"-profile:v", "main", // Universal profile supported by almost all players
-		"-vf", "scale_cuda=format=yuv420p", // Scale entirely on GPU
-		"-af", "aresample=async=1", // Force audio sync to video timestamps
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-sn",
+		"-vf", "sidedata=mode=delete,format=nv12,hwupload",
+		"-c:v", "h264_vaapi",
+		"-profile:v", "main",
 		"-b:v", bitrate,
 		"-maxrate", bitrate,
-		"-bufsize", fmt.Sprintf("%s", bitrate),
-		"-g", "60", // 2 second GOP at 30fps
-		"-sc_threshold", "0",
+		"-bufsize", bufsize,
+		"-bf", "0",
+		"-g", "60",
+		"-keyint_min", "60",
+		"-fps_mode", "passthrough",
+		"-af", "aresample=async=1",
 		"-c:a", "aac",
 		"-b:a", "128k",
 		"-ac", "2",
+		"-ar", "48000",
 		"-f", "hls",
 		"-hls_time", "2",
-		"-hls_list_size", "5",
-		"-hls_flags", "delete_segments",
+		"-hls_list_size", "8",
+		"-hls_flags", "delete_segments+append_list+independent_segments+omit_endlist",
 		"-hls_segment_filename", segmentPath,
 		playlistPath,
 	}
@@ -791,14 +838,38 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	go func(id string, session *HLSSession) {
+		err := cmd.Wait()
+		if err != nil {
+			fmt.Printf("[HLS Manager] FFmpeg exited for session %s: %v\n", id, err)
+		} else {
+			fmt.Printf("[HLS Manager] FFmpeg exited cleanly for session %s\n", id)
+		}
+
+		hlsSessionsMu.Lock()
+		active, exists := hlsSessions[id]
+		if exists && active == session {
+			delete(hlsSessions, id)
+			go os.RemoveAll(session.Dir)
+		}
+		hlsSessionsMu.Unlock()
+	}(id, sess)
+
 	// Wait for the m3u8 file to be created before returning
+	startupTimeout := 60 * time.Second
+	if rawTimeout := strings.TrimSpace(os.Getenv("FFMPEG_HLS_START_TIMEOUT_SECONDS")); rawTimeout != "" {
+		if seconds, err := strconv.Atoi(rawTimeout); err == nil && seconds > 0 {
+			startupTimeout = time.Duration(seconds) * time.Second
+		}
+	}
+	deadline := time.Now().Add(startupTimeout)
 	found := false
-	for i := 0; i < 100; i++ {
+	for time.Now().Before(deadline) {
 		if _, err := os.Stat(filepath.Join(tempDir, "stream.m3u8")); err == nil {
 			found = true
 			break
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
 	}
 
 	if !found {

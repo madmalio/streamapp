@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../models/channel.dart';
 import '../services/api_service.dart';
 import 'player_screen.dart';
+import 'settings_screen.dart';
 
 class GuideScreen extends StatefulWidget {
   const GuideScreen({super.key});
@@ -23,6 +24,7 @@ class _GuideScreenState extends State<GuideScreen> {
   }
 
   Future<void> _loadChannels() async {
+    setState(() => _isLoading = true);
     try {
       final api = Provider.of<ApiService>(context, listen: false);
       final channels = await api.getChannels();
@@ -52,7 +54,19 @@ class _GuideScreenState extends State<GuideScreen> {
                 const SizedBox(height: 40),
                 const Icon(Icons.list, size: 32, color: Colors.blueAccent),
                 const SizedBox(height: 40),
-                const Icon(Icons.settings, size: 32, color: Colors.white54),
+                IconButton(
+                  icon: const Icon(Icons.settings, size: 32, color: Colors.white54),
+                  tooltip: 'Settings',
+                  onPressed: () async {
+                    final changed = await Navigator.push<bool>(
+                      context,
+                      MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                    );
+                    if (changed == true && mounted) {
+                      await _loadChannels();
+                    }
+                  },
+                ),
               ],
             ),
           ),
@@ -155,15 +169,29 @@ class _ChannelCardState extends State<ChannelCard> {
   }
 
   void _playChannel() async {
-    final api = Provider.of<ApiService>(context, listen: false);
-    final rawUrl = await api.getStreamUrl(widget.channel.streamUrl);
-    
-    if (context.mounted) {
-      Navigator.push(
-        context,
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+
+    try {
+      final api = Provider.of<ApiService>(context, listen: false);
+      final rawUrl = await api.getStreamUrl(widget.channel.streamUrl);
+
+      if (!mounted) {
+        return;
+      }
+
+      navigator.push(
         MaterialPageRoute(
           builder: (_) => PlayerScreen(channel: widget.channel, streamUrl: rawUrl),
         ),
+      );
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Unable to start stream. Check Settings > Backend API URL.')),
       );
     }
   }
