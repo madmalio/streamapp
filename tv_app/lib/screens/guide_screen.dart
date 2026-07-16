@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'dart:async';
 import '../models/channel.dart';
 import '../services/api_service.dart';
 import 'player_screen.dart';
@@ -14,13 +15,33 @@ class GuideScreen extends StatefulWidget {
 }
 
 class _GuideScreenState extends State<GuideScreen> {
+  static const bool _prewarmEnabled = false;
+
   List<Channel> _channels = [];
   bool _isLoading = true;
+  Timer? _prewarmTimer;
+  String? _lastPrewarmedKey;
+  String? _activePrewarmSessionId;
+  int _prewarmToken = 0;
+  DateTime? _lastPrewarmAt;
 
   @override
   void initState() {
     super.initState();
+    _primeAutoRecommendation();
+    if (!_prewarmEnabled) {
+      _prewarmToken = 0;
+    }
     _loadChannels();
+  }
+
+  Future<void> _primeAutoRecommendation() async {
+    try {
+      final api = Provider.of<ApiService>(context, listen: false);
+      await api.primeAutoRecommendation();
+    } catch (_) {
+      // Keep startup resilient even if speed test fails.
+    }
   }
 
   Future<void> _loadChannels() async {
@@ -36,6 +57,89 @@ class _GuideScreenState extends State<GuideScreen> {
       setState(() => _isLoading = false);
       // Handled simply for now
     }
+  }
+
+  void _schedulePrewarm(Channel channel) {
+    if (!_prewarmEnabled) {
+      return;
+    }
+
+    _prewarmTimer?.cancel();
+    final token = ++_prewarmToken;
+    _prewarmTimer = Timer(const Duration(milliseconds: 2200), () async {
+      if (!mounted) {
+        return;
+      }
+
+      final now = DateTime.now();
+      if (_lastPrewarmAt != null && now.difference(_lastPrewarmAt!) < const Duration(seconds: 4)) {
+        return;
+      }
+
+      final api = Provider.of<ApiService>(context, listen: false);
+      final recommended = await api.getRecommendedBitrate(forceRefresh: false, fallbackOnUnknown: true);
+      final key = '${channel.streamUrl}|$recommended';
+      if (_lastPrewarmedKey == key) {
+        return;
+      }
+
+      // Free tuner from prior prewarm before requesting another channel.
+      final previousSessionId = _activePrewarmSessionId;
+      _activePrewarmSessionId = null;
+      if (previousSessionId != null) {
+        await api.stopStream(previousSessionId);
+      }
+
+      _lastPrewarmedKey = key;
+
+      final session = await api.prewarmHlsStream(channel.streamUrl, bitrate: recommended);
+      if (session == null) {
+        return;
+      }
+
+      if (!mounted || token != _prewarmToken) {
+        unawaited(api.stopStream(session.sessionId));
+        return;
+      }
+
+      _activePrewarmSessionId = session.sessionId;
+      _lastPrewarmAt = now;
+    });
+  }
+
+  Future<void> _releaseActivePrewarm() async {
+    final sessionId = _activePrewarmSessionId;
+    _activePrewarmSessionId = null;
+    if (sessionId == null) {
+      return;
+    }
+
+    try {
+      final api = Provider.of<ApiService>(context, listen: false);
+      await api.stopStream(sessionId);
+    } catch (_) {}
+  }
+
+  Future<void> _openChannel(Channel channel) async {
+    _prewarmTimer?.cancel();
+    _prewarmToken += 1;
+    await _releaseActivePrewarm();
+    if (!mounted) {
+      return;
+    }
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PlayerScreen(channel: channel, streamUrl: channel.streamUrl),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _prewarmTimer?.cancel();
+    unawaited(_releaseActivePrewarm());
+    super.dispose();
   }
 
   @override
@@ -98,7 +202,11 @@ class _GuideScreenState extends State<GuideScreen> {
                             ),
                             itemCount: _channels.length,
                             itemBuilder: (context, index) {
-                              return ChannelCard(channel: _channels[index]);
+                              return ChannelCard(
+                                channel: _channels[index],
+                                onFocus: _prewarmEnabled ? _schedulePrewarm : null,
+                                onPlay: _openChannel,
+                              );
                             },
                           ),
                         ),
@@ -114,8 +222,15 @@ class _GuideScreenState extends State<GuideScreen> {
 
 class ChannelCard extends StatefulWidget {
   final Channel channel;
+  final ValueChanged<Channel>? onFocus;
+  final ValueChanged<Channel>? onPlay;
 
-  const ChannelCard({super.key, required this.channel});
+  const ChannelCard({
+    super.key,
+    required this.channel,
+    this.onFocus,
+    this.onPlay,
+  });
 
   @override
   State<ChannelCard> createState() => _ChannelCardState();
@@ -123,12 +238,16 @@ class ChannelCard extends StatefulWidget {
 
 class _ChannelCardState extends State<ChannelCard> {
   bool _isFocused = false;
+  bool _isHovered = false;
 
   @override
   Widget build(BuildContext context) {
     return Focus(
       onFocusChange: (hasFocus) {
         setState(() => _isFocused = hasFocus);
+        if (hasFocus) {
+          widget.onFocus?.call(widget.channel);
+        }
       },
       onKeyEvent: (node, event) {
         if (event is KeyDownEvent && 
@@ -138,28 +257,34 @@ class _ChannelCardState extends State<ChannelCard> {
         }
         return KeyEventResult.ignored;
       },
-      child: GestureDetector(
-        onTap: _playChannel,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          decoration: BoxDecoration(
-            color: _isFocused ? Colors.blueAccent : const Color(0xFF222222),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: _isFocused ? Colors.white : Colors.transparent,
-              width: 2,
+      child: MouseRegion(
+        onEnter: (_) {
+          setState(() => _isHovered = true);
+        },
+        onExit: (_) => setState(() => _isHovered = false),
+        child: GestureDetector(
+          onTap: _playChannel,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            decoration: BoxDecoration(
+              color: (_isFocused || _isHovered) ? Colors.blueAccent : const Color(0xFF222222),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: (_isFocused || _isHovered) ? Colors.white : Colors.transparent,
+                width: 2,
+              ),
+              boxShadow: (_isFocused || _isHovered)
+                  ? [BoxShadow(color: Colors.blueAccent.withOpacity(0.5), blurRadius: 20, spreadRadius: 5)]
+                  : [],
             ),
-            boxShadow: _isFocused
-                ? [BoxShadow(color: Colors.blueAccent.withOpacity(0.5), blurRadius: 20, spreadRadius: 5)]
-                : [],
-          ),
-          child: Center(
-            child: Text(
-              widget.channel.name,
-              style: TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: _isFocused ? Colors.white : Colors.white70,
+            child: Center(
+              child: Text(
+                widget.channel.name,
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: (_isFocused || _isHovered) ? Colors.white : Colors.white70,
+                ),
               ),
             ),
           ),
@@ -169,30 +294,15 @@ class _ChannelCardState extends State<ChannelCard> {
   }
 
   void _playChannel() async {
-    final navigator = Navigator.of(context);
-    final messenger = ScaffoldMessenger.of(context);
-
-    try {
-      final api = Provider.of<ApiService>(context, listen: false);
-      final rawUrl = await api.getStreamUrl(widget.channel.streamUrl);
-
-      if (!mounted) {
-        return;
-      }
-
-      navigator.push(
-        MaterialPageRoute(
-          builder: (_) => PlayerScreen(channel: widget.channel, streamUrl: rawUrl),
-        ),
-      );
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Unable to start stream. Check Settings > Backend API URL.')),
-      );
+    if (widget.onPlay != null) {
+      widget.onPlay!(widget.channel);
+      return;
     }
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PlayerScreen(channel: widget.channel, streamUrl: widget.channel.streamUrl),
+      ),
+    );
   }
 }

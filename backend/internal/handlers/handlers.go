@@ -45,6 +45,7 @@ type HLSSession struct {
 	LastAccessed time.Time
 	Cmd          *exec.Cmd
 	Cancel       context.CancelFunc
+	IsPrewarm    bool
 }
 
 var (
@@ -60,13 +61,28 @@ func init() {
 		}
 	}
 
+	prewarmTimeout := 30 * time.Second
+	if rawTimeout := strings.TrimSpace(os.Getenv("FFMPEG_HLS_PREWARM_TIMEOUT_SECONDS")); rawTimeout != "" {
+		if seconds, err := strconv.Atoi(rawTimeout); err == nil && seconds > 0 {
+			prewarmTimeout = time.Duration(seconds) * time.Second
+		}
+	}
+
+	// Clean any orphaned HLS artifacts from prior process runs.
+	os.RemoveAll(filepath.Join(os.TempDir(), "streamapp_hls"))
+
 	go func() {
 		for {
 			time.Sleep(5 * time.Second)
 			hlsSessionsMu.Lock()
 			now := time.Now()
 			for id, sess := range hlsSessions {
-				if now.Sub(sess.LastAccessed) > sessionTimeout {
+				timeout := sessionTimeout
+				if sess.IsPrewarm {
+					timeout = prewarmTimeout
+				}
+
+				if now.Sub(sess.LastAccessed) > timeout {
 					fmt.Printf("[HLS Manager] Session %s timed out, cleaning up...\n", id)
 					sess.Cancel()
 					go func(dir string) {
@@ -739,14 +755,24 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 		bitrate = "4M" // Default to 4 Mbps if not specified
 	}
 
+	fastSwitch := strings.EqualFold(r.URL.Query().Get("fast"), "1") ||
+		strings.EqualFold(r.URL.Query().Get("fast"), "true")
+	prewarm := strings.EqualFold(r.URL.Query().Get("prewarm"), "1") ||
+		strings.EqualFold(r.URL.Query().Get("prewarm"), "true")
+	transmux := strings.EqualFold(r.URL.Query().Get("transmux"), "1") ||
+		strings.EqualFold(r.URL.Query().Get("transmux"), "true")
+
 	// Create unique ID based on URL and bitrate
-	hashInput := fmt.Sprintf("%s-%s", streamURL, bitrate)
+	hashInput := fmt.Sprintf("%s-%s-%t", streamURL, bitrate, transmux)
 	hash := sha256.Sum256([]byte(hashInput))
 	id := hex.EncodeToString(hash[:])[:16]
 
 	hlsSessionsMu.Lock()
 	sess, exists := hlsSessions[id]
 	if exists {
+		if !prewarm && sess.IsPrewarm {
+			sess.IsPrewarm = false
+		}
 		sess.LastAccessed = time.Now()
 		hlsSessionsMu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -765,12 +791,17 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 		Dir:          tempDir,
 		LastAccessed: time.Now(),
 		Cancel:       cancel,
+		IsPrewarm:    prewarm,
 	}
 	hlsSessions[id] = sess
 	hlsSessionsMu.Unlock()
 
 	playlistPath := filepath.ToSlash(filepath.Join(tempDir, "stream.m3u8"))
-	segmentPath := filepath.ToSlash(filepath.Join(tempDir, "segment_%05d.ts"))
+	segmentExt := ".m4s"
+	if transmux {
+		segmentExt = ".ts"
+	}
+	segmentPath := filepath.ToSlash(filepath.Join(tempDir, "segment_%05d"+segmentExt))
 
 	vaapiDevice := os.Getenv("FFMPEG_VAAPI_DEVICE")
 	if vaapiDevice == "" {
@@ -779,38 +810,74 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 
 	bufsize := hlsBufsizeFromBitrate(bitrate)
 
-	// Resilient Intel VAAPI hardware pipeline for dirty OTA MPEG-TS feeds.
-	args := []string{
-		"-vaapi_device", vaapiDevice,
-		"-fflags", "+genpts",
-		"-err_detect", "ignore_err",
-		"-analyzeduration", "20M",
-		"-probesize", "20M",
-		"-i", streamURL,
-		"-map", "0:v:0",
-		"-map", "0:a:0?",
-		"-sn",
-		"-vf", "sidedata=mode=delete,format=nv12,hwupload",
-		"-c:v", "h264_vaapi",
-		"-profile:v", "main",
-		"-b:v", bitrate,
-		"-maxrate", bitrate,
-		"-bufsize", bufsize,
-		"-bf", "0",
-		"-g", "60",
-		"-keyint_min", "60",
-		"-fps_mode", "passthrough",
-		"-af", "aresample=async=1",
-		"-c:a", "aac",
-		"-b:a", "128k",
-		"-ac", "2",
-		"-ar", "48000",
-		"-f", "hls",
-		"-hls_time", "2",
-		"-hls_list_size", "8",
-		"-hls_flags", "delete_segments+append_list+independent_segments+omit_endlist",
-		"-hls_segment_filename", segmentPath,
-		playlistPath,
+	probeSize := "20M"
+	analyzeDuration := "20M"
+	hlsTime := "2"
+	hlsListSize := "8"
+	if fastSwitch {
+		probeSize = "6M"
+		analyzeDuration = "6M"
+		hlsTime = "1"
+		hlsListSize = "4"
+	}
+
+	var args []string
+	if transmux {
+		// Transmux mode: copy source codecs into HLS-TS segments (no re-encode).
+		args = []string{
+			"-fflags", "+genpts",
+			"-err_detect", "ignore_err",
+			"-analyzeduration", analyzeDuration,
+			"-probesize", probeSize,
+			"-i", streamURL,
+			"-map", "0:v:0",
+			"-map", "0:a:0?",
+			"-sn",
+			"-c:v", "copy",
+			"-c:a", "copy",
+			"-f", "hls",
+			"-hls_time", hlsTime,
+			"-hls_list_size", hlsListSize,
+			"-hls_flags", "delete_segments+append_list+omit_endlist",
+			"-hls_segment_filename", segmentPath,
+			playlistPath,
+		}
+	} else {
+		// Resilient Intel VAAPI hardware pipeline for dirty OTA MPEG-TS feeds.
+		args = []string{
+			"-vaapi_device", vaapiDevice,
+			"-fflags", "+genpts",
+			"-err_detect", "ignore_err",
+			"-analyzeduration", analyzeDuration,
+			"-probesize", probeSize,
+			"-i", streamURL,
+			"-map", "0:v:0",
+			"-map", "0:a:0?",
+			"-sn",
+			"-vf", "sidedata=mode=delete,format=nv12,hwupload",
+			"-c:v", "h264_vaapi",
+			"-profile:v", "main",
+			"-b:v", bitrate,
+			"-maxrate", bitrate,
+			"-bufsize", bufsize,
+			"-bf", "0",
+			"-g", "60",
+			"-keyint_min", "60",
+			"-fps_mode", "passthrough",
+			"-af", "aresample=async=1",
+			"-c:a", "aac",
+			"-b:a", "128k",
+			"-ac", "2",
+			"-ar", "48000",
+			"-f", "hls",
+			"-hls_time", hlsTime,
+			"-hls_list_size", hlsListSize,
+			"-hls_flags", "delete_segments+append_list+independent_segments+omit_endlist",
+			"-hls_segment_type", "fmp4",
+			"-hls_fmp4_init_filename", "init.mp4",
+			"-hls_segment_filename", segmentPath,
+			playlistPath,
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
@@ -921,7 +988,7 @@ func StopAllStreams(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "all_stopped"})
 }
 
-// ServeHLSSegments serves the m3u8 playlist and ts segments generated by FFmpeg.
+// ServeHLSSegments serves the m3u8 playlist and segment files generated by FFmpeg.
 func ServeHLSSegments(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	file := chi.URLParam(r, "*")
@@ -944,6 +1011,12 @@ func ServeHLSSegments(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("Expires", "0")
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	} else if strings.HasSuffix(file, ".m4s") {
+		w.Header().Set("Content-Type", "video/iso.segment")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+	} else if strings.HasSuffix(file, ".mp4") {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
 	} else if strings.HasSuffix(file, ".ts") {
 		w.Header().Set("Content-Type", "video/mp2t")
 		w.Header().Set("Cache-Control", "public, max-age=86400")

@@ -31,7 +31,14 @@ func main() {
 
 	// Allows the frontend and backend to communicate seamlessly
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:5173", "http://localhost:8080"},
+		AllowedOrigins: []string{
+			"http://localhost:5173",
+			"http://localhost:8080",
+			"http://localhost:8081",
+			"http://127.0.0.1:8081",
+			"http://192.168.4.143:8081",
+			"http://dev-server:8081",
+		},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		ExposedHeaders:   []string{"Link"},

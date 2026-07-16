@@ -22,11 +22,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
   late Player player;
   late VideoController controller;
   String _currentBitrate = 'Original';
+  String? _activeHlsSessionId;
+  int _switchToken = 0;
   StreamSubscription<double>? _volumeSubscription;
 
   final List<String> _qualityOptions = [
     'Auto',
     'Original',
+    'Original HLS',
     '8M',
     '4M',
     '3M',
@@ -41,10 +44,42 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> _bootstrapPlayback() async {
     await _initPlayer();
+    if (!mounted) {
+      return;
+    }
 
-    // Start immediately with the direct stream.
-    await player.open(Media(widget.streamUrl), play: true);
+    // If the channel URL is already HLS (e.g. external GStreamer test stream),
+    // play it directly and skip backend transcoder startup.
+    if (widget.streamUrl.contains('.m3u8')) {
+      setState(() => _currentBitrate = 'Original');
+      await _openAndForcePlay(widget.streamUrl);
+      return;
+    }
+
+    // Start directly in Auto using the app-level cached recommendation.
+    await _changeQuality(
+      'Auto',
+      fallbackOnUnknownAuto: true,
+      refreshAutoRecommendation: false,
+      preferFastSwitch: true,
+    );
+  }
+
+  Future<void> _openAndForcePlay(String url) async {
+    await player.open(Media(url), play: true);
     await player.play();
+
+    // Some devices occasionally pause right after source changes.
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 350), () async {
+      if (mounted && !player.state.playing) {
+        await player.play();
+      }
+    }));
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 900), () async {
+      if (mounted && !player.state.playing) {
+        await player.play();
+      }
+    }));
   }
 
   Future<void> _initPlayer() async {
@@ -60,70 +95,157 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _volumeSubscription = player.stream.volume.listen((volume) {
       prefs.setDouble('player_volume', volume);
     });
+
   }
 
   Future<void> _changeQuality(
     String bitrate, {
-    bool releaseTunersFirst = true,
+    bool fallbackOnUnknownAuto = true,
+    bool refreshAutoRecommendation = false,
+    bool preferFastSwitch = false,
   }) async {
     if (bitrate == _currentBitrate && player.state.playing) return;
+
+    final requestToken = ++_switchToken;
 
     setState(() {
       _currentBitrate = bitrate;
     });
 
+    String? pendingSessionId;
+
     try {
       final api = Provider.of<ApiService>(context, listen: false);
 
-      if (releaseTunersFirst && bitrate != 'Original') {
-        // Free up any previous HDHomeRun tuners held by old FFmpeg sessions.
-        await api.stopAllStreams();
-        await Future.delayed(const Duration(milliseconds: 300));
-      }
-      
       String targetBitrate = bitrate;
       if (bitrate == 'Auto') {
-        // Run speed test
-        final speedMbps = await api.runSpeedTest();
-        debugPrint('Speed Test Result: ${speedMbps.toStringAsFixed(2)} Mbps');
-
-        if (speedMbps > 12.0) {
-          targetBitrate = '8M';
-        } else if (speedMbps > 6.0) {
-          targetBitrate = '4M';
-        } else if (speedMbps > 4.0) {
-          targetBitrate = '3M';
-        } else {
-          targetBitrate = '1.5M';
-        }
+        targetBitrate = await api.getRecommendedBitrate(
+          forceRefresh: refreshAutoRecommendation,
+          fallbackOnUnknown: fallbackOnUnknownAuto,
+        );
         debugPrint('Auto Selected Bitrate: $targetBitrate');
+
+        if (targetBitrate == _currentBitrate) {
+          return;
+        }
+        if (!mounted || requestToken != _switchToken) {
+          return;
+        }
+        setState(() => _currentBitrate = targetBitrate);
       }
 
-      String newUrl;
       if (targetBitrate == 'Original') {
-        newUrl = widget.channel.streamUrl;
-      } else {
-        newUrl = await api.getStreamUrl(widget.channel.streamUrl, bitrate: targetBitrate);
+        await _openAndForcePlay(widget.streamUrl);
+
+        final oldSessionId = _activeHlsSessionId;
+        _activeHlsSessionId = null;
+        if (oldSessionId != null) {
+          unawaited(api.stopStream(oldSessionId));
+        }
+        return;
       }
 
-      await player.open(Media(newUrl), play: true);
-      await player.play();
+      if (targetBitrate == 'Original HLS') {
+        final session = await api.startHlsStream(
+          widget.channel.streamUrl,
+          bitrate: 'Original',
+          fast: preferFastSwitch,
+          transmux: true,
+        );
+        pendingSessionId = session.sessionId;
+        if (!mounted || requestToken != _switchToken) {
+          unawaited(api.stopStream(session.sessionId));
+          return;
+        }
+
+        final previousSessionId = _activeHlsSessionId;
+        await _openAndForcePlay(session.url);
+        _activeHlsSessionId = session.sessionId;
+        pendingSessionId = null;
+
+        if (previousSessionId != null && previousSessionId != session.sessionId) {
+          unawaited(api.stopStream(previousSessionId));
+        }
+        return;
+      }
+
+      HlsStreamSession session;
+      try {
+        session = await api.startHlsStream(
+          widget.channel.streamUrl,
+          bitrate: targetBitrate,
+          fast: preferFastSwitch,
+        );
+      } catch (_) {
+        try {
+          // Fast profile failed, retry with stable startup settings.
+          session = await api.startHlsStream(
+            widget.channel.streamUrl,
+            bitrate: targetBitrate,
+            fast: false,
+          );
+        } catch (_) {
+          // If tuner allocation is stuck (e.g. HDHomeRun 503), clear stale sessions once and retry.
+          await api.stopAllStreams();
+          await Future<void>.delayed(const Duration(milliseconds: 350));
+          session = await api.startHlsStream(
+            widget.channel.streamUrl,
+            bitrate: targetBitrate,
+            fast: false,
+          );
+        }
+      }
+      pendingSessionId = session.sessionId;
+      if (!mounted || requestToken != _switchToken) {
+        unawaited(api.stopStream(session.sessionId));
+        return;
+      }
+
+      final previousSessionId = _activeHlsSessionId;
+
+      await _openAndForcePlay(session.url);
+
+      _activeHlsSessionId = session.sessionId;
+      pendingSessionId = null;
+
+      if (previousSessionId != null && previousSessionId != session.sessionId) {
+        unawaited(api.stopStream(previousSessionId));
+      }
     } catch (e) {
-      if (mounted) {
-        await player.open(Media(widget.streamUrl), play: true);
-        await player.play();
+      if (!mounted) {
+        return;
+      }
+
+      try {
+        final api = Provider.of<ApiService>(context, listen: false);
+        if (pendingSessionId != null) {
+          unawaited(api.stopStream(pendingSessionId));
+        }
+      } catch (_) {}
+
+      if (mounted && !player.state.playing) {
+        await _openAndForcePlay(widget.streamUrl);
       }
     }
+  }
+
+  Future<void> _onQualitySelected(String bitrate) async {
+    await _changeQuality(bitrate, preferFastSwitch: true);
   }
 
   @override
   void dispose() {
     _volumeSubscription?.cancel();
-    player.dispose();
+
     try {
       final api = Provider.of<ApiService>(context, listen: false);
-      api.stopAllStreams();
+      final sessionId = _activeHlsSessionId;
+      if (sessionId != null) {
+        unawaited(api.stopStream(sessionId));
+      }
     } catch (_) {}
+
+    player.dispose();
     super.dispose();
   }
 
@@ -206,11 +328,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 icon: const Icon(Icons.settings, color: Colors.white, size: 32),
                 color: Colors.black87,
                 tooltip: 'Quality',
-                onSelected: _changeQuality,
+                onSelected: _onQualitySelected,
                 itemBuilder: (context) => _qualityOptions.map((value) {
                   String text = value == 'Original' ? 'Original (Direct)' : '${value.replaceAll('M', '')} Mbps';
                   if (value == 'Auto') {
                     text = 'Auto';
+                  } else if (value == 'Original HLS') {
+                    text = 'Original (HLS)';
                   }
                   return PopupMenuItem(
                     value: value,
