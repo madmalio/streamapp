@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:http/http.dart' as http;
 import '../models/channel.dart';
 import '../services/api_service.dart';
 import '../services/app_settings.dart';
@@ -26,6 +29,10 @@ class PlayerScreen extends StatefulWidget {
 class _PlayerScreenState extends State<PlayerScreen> {
   Player? player;
   VideoController? controller;
+  
+  RTCVideoRenderer? _webrtcRenderer;
+  RTCPeerConnection? _peerConnection;
+  
   bool _isChangingQuality = false;
 
   String _currentBitrate = 'Original';
@@ -38,6 +45,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     'Auto',
     'Original',
     'Original HLS',
+    'WebRTC',
     '8M',
     '4M',
     '3M',
@@ -59,7 +67,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await _initPlayer();
     if (!mounted) return;
 
-    if (widget.streamUrl.contains('.m3u8')) {
+    if (widget.streamUrl.contains('.m3u8') || widget.streamUrl.startsWith('srt://')) {
       setState(() => _currentBitrate = 'Original');
       await _openAndForcePlay(widget.streamUrl);
       return;
@@ -149,8 +157,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
       // Aggressively stop the player to instantly sever any direct TCP connections to the HDHomeRun 
       // (crucial if we are currently playing the 'Original' direct stream).
-      // We load an empty string to force mpv to drop the socket, as stop() sometimes caches it.
-      await player?.open(Media(''), play: false);
+      await player?.stop();
 
       // Aggressively stop the old HLS stream before starting the new one.
       // This is absolutely critical for HDHomeRun tuners which cannot pool connections.
@@ -173,9 +180,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
         if (!mounted || requestToken != _switchToken) return;
         setState(() => _currentBitrate = targetBitrate);
       }
+      
+      // Tear down previous WebRTC connection if any
+      await _stopWebRTC();
 
       if (targetBitrate == 'Original') {
         await _openAndForcePlay(widget.streamUrl);
+        return;
+      }
+
+      if (targetBitrate == 'WebRTC') {
+        try {
+          final session = await _api.startWebRTCStream(widget.channel.streamUrl);
+          if (!mounted || requestToken != _switchToken) return;
+          await _startWebRTC(session.url);
+          // Set the active session ID so that dispose() stops the WebRTC transcoder!
+          _activeHlsSessionId = session.sessionId;
+        } catch (_) {
+          // Fallback if WebRTC fails
+          await _openAndForcePlay(widget.streamUrl);
+        }
         return;
       }
 
@@ -229,6 +253,82 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
+  Future<void> _startWebRTC(String whepUrl) async {
+    // 1. Initialize renderer
+    _webrtcRenderer = RTCVideoRenderer();
+    await _webrtcRenderer!.initialize();
+
+    // 2. Create PeerConnection
+    _peerConnection = await createPeerConnection({
+      'sdpSemantics': 'unified-plan',
+    });
+
+    // 3. Bind stream to renderer
+    _peerConnection!.onTrack = (RTCTrackEvent event) {
+      if (event.track.kind == 'video' && event.streams.isNotEmpty) {
+        _webrtcRenderer!.srcObject = event.streams[0];
+        setState(() {}); // trigger rebuild to show WebRTC view
+      }
+    };
+
+    // 4. Add Transceivers for Receiving Audio & Video
+    await _peerConnection!.addTransceiver(
+      kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
+      init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
+    );
+    await _peerConnection!.addTransceiver(
+      kind: RTCRtpMediaType.RTCRtpMediaTypeAudio,
+      init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
+    );
+
+    // 5. Create Offer
+    final offer = await _peerConnection!.createOffer();
+    await _peerConnection!.setLocalDescription(offer);
+
+    // 6. Send WHEP POST request to MediaMTX with retry loop
+    // It takes a second or two for GStreamer to initialize the VAAPI encoder
+    // and push the SRT stream to MediaMTX. We must retry the WebRTC negotiation
+    // if MediaMTX returns a 404/400 (no stream available).
+    int retries = 10;
+    http.Response? response;
+    while (retries > 0) {
+      response = await http.post(
+        Uri.parse(whepUrl),
+        headers: {'Content-Type': 'application/sdp'},
+        body: offer.sdp,
+      );
+
+      if (response.statusCode == 201 || response.statusCode == 200) {
+        break;
+      }
+      
+      // If the stream isn't ready, wait 500ms and try again
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      retries--;
+    }
+
+    if (response == null || (response.statusCode != 201 && response.statusCode != 200)) {
+      throw Exception('WHEP server rejected offer: ${response?.statusCode}');
+    }
+
+    // 7. Set Remote Description (Answer)
+    await _peerConnection!.setRemoteDescription(
+      RTCSessionDescription(response.body, 'answer'),
+    );
+  }
+
+  Future<void> _stopWebRTC() async {
+    if (_peerConnection != null) {
+      await _peerConnection!.close();
+      _peerConnection = null;
+    }
+    if (_webrtcRenderer != null) {
+      _webrtcRenderer!.srcObject = null;
+      await _webrtcRenderer!.dispose();
+      _webrtcRenderer = null;
+    }
+  }
+
   Future<void> _toggleEngine() async {
     final newEngine = _currentEngine == 'ffmpeg' ? 'gstreamer' : 'ffmpeg';
     setState(() => _currentEngine = newEngine);
@@ -252,6 +352,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void dispose() {
     _volumeSubscription?.cancel();
+    _stopWebRTC();
     try {
       final sessionId = _activeHlsSessionId;
       if (sessionId != null) {
@@ -281,7 +382,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
         child: Stack(
           children: [
             Center(
-              child: MaterialDesktopVideoControlsTheme(
+              child: _currentBitrate == 'WebRTC' && _webrtcRenderer != null
+                  ? RTCVideoView(_webrtcRenderer!)
+                  : MaterialDesktopVideoControlsTheme(
                       normal: MaterialDesktopVideoControlsThemeData(
                         bottomButtonBar: [
                           const MaterialPlayOrPauseButton(),

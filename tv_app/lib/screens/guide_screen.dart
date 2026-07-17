@@ -156,6 +156,49 @@ class _GuideScreenState extends State<GuideScreen> {
     );
   }
 
+  Future<void> _openSrtTestStream() async {
+    _prewarmTimer?.cancel();
+    await _releaseActivePrewarm();
+    if (!mounted) return;
+
+    if (_channels.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No channels loaded yet!')));
+      return;
+    }
+    
+    // The user requested we test channel 7.1 specifically, because some other channels are broken.
+    Channel targetChannel = _channels.first;
+    for (var ch in _channels) {
+      if (ch.streamUrl.contains('v7.1')) {
+        targetChannel = ch;
+        break;
+      }
+    }
+
+    try {
+      final api = Provider.of<ApiService>(context, listen: false);
+      final srtUrl = await api.startSrtStream(targetChannel.streamUrl);
+      
+      final testChannel = Channel(
+        id: 'test-srt',
+        name: 'SRT Test: ${targetChannel.name}',
+        streamUrl: srtUrl,
+        isFavorite: false,
+      );
+
+      if (!mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => PlayerScreen(channel: testChannel, streamUrl: srtUrl),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('SRT failed: $e')));
+      }
+    }
+  }
+
   @override
   void dispose() {
     _prewarmTimer?.cancel();
@@ -216,6 +259,13 @@ class _GuideScreenState extends State<GuideScreen> {
                                 ),
                               ),
                             ),
+                            ElevatedButton.icon(
+                              onPressed: _openSrtTestStream,
+                              icon: const Icon(Icons.speed),
+                              label: const Text('SRT Test'),
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
+                            ),
+                            const SizedBox(width: 10),
                             ElevatedButton.icon(
                               onPressed: _openGstTestStream,
                               icon: const Icon(Icons.science),

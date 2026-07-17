@@ -1145,3 +1145,184 @@ func ServeHLSSegments(w http.ResponseWriter, r *http.Request) {
 
 	http.ServeFile(w, r, filePath)
 }
+
+// StartWebRTCStream publishes an HDHomeRun stream to a local MediaMTX instance via RTSP.
+func StartWebRTCStream(w http.ResponseWriter, r *http.Request) {
+	streamURL := r.URL.Query().Get("url")
+	if streamURL == "" {
+		writeError(w, http.StatusBadRequest, "url parameter is required")
+		return
+	}
+
+	hashInput := fmt.Sprintf("webrtc-%s", streamURL)
+	hash := sha256.Sum256([]byte(hashInput))
+	id := hex.EncodeToString(hash[:])[:16]
+
+	// Determine the server IP from the request host
+	serverHost := r.Host
+	if strings.Contains(serverHost, ":") {
+		serverHost = strings.Split(serverHost, ":")[0]
+	}
+
+	hlsSessionsMu.Lock()
+	sess, exists := hlsSessions[id]
+	if exists {
+		sess.LastAccessed = time.Now()
+		hlsSessionsMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"webrtc_url": fmt.Sprintf("http://%s:8889/%s/whep", serverHost, id),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sess = &HLSSession{
+		ID:           id,
+		Dir:          "", // No dir needed for WebRTC
+		LastAccessed: time.Now(),
+		Cancel:       cancel,
+		IsPrewarm:    false,
+		Done:         make(chan struct{}),
+	}
+	hlsSessions[id] = sess
+	hlsSessionsMu.Unlock()
+
+	// Push the stream to MediaMTX via RTSP on port 8554
+	rtspUrl := fmt.Sprintf("rtsp://127.0.0.1:8554/%s", id)
+
+	args := []string{
+		"-y", "-hide_banner", "-loglevel", "warning",
+		"-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD128", "-hwaccel_output_format", "vaapi",
+		"-i", streamURL,
+		"-vf", "deinterlace_vaapi",
+		"-c:v", "h264_vaapi", "-bf", "0", "-sei", "0", "-b:v", "3M", "-maxrate", "3M", "-bufsize", "6M",
+		"-c:a", "libopus", "-ac", "2",
+		"-f", "rtsp", "-rtsp_transport", "tcp", "-pkt_size", "1200", rtspUrl,
+	}
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	
+	// Create a log file to capture why GStreamer might crash
+	logFile, err := os.OpenFile(filepath.Join(os.TempDir(), "webrtc_gst.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+	if err == nil {
+		cmd.Stderr = logFile
+	}
+	
+	sess.Cmd = cmd
+
+	if err := cmd.Start(); err != nil {
+		sess.Cancel()
+		close(sess.Done)
+		writeError(w, http.StatusInternalServerError, "failed to start webrtc transcoder")
+		return
+	}
+
+	go func(id string, session *HLSSession) {
+		err := cmd.Wait()
+		if err != nil {
+			fmt.Printf("[WebRTC] ffmpeg exited for session %s: %v\n", id, err)
+		}
+
+		hlsSessionsMu.Lock()
+		active, exists := hlsSessions[id]
+		if exists && active == session {
+			delete(hlsSessions, id)
+		}
+		hlsSessionsMu.Unlock()
+		close(session.Done)
+	}(id, sess)
+
+	// Since we don't need to wait for chunks, we can just return immediately!
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"webrtc_url": fmt.Sprintf("http://%s:8889/%s/whep", serverHost, id),
+		"session_id": id,
+	})
+}
+
+// StartSRTStream publishes an HDHomeRun stream to a local MediaMTX instance via SRT.
+func StartSRTStream(w http.ResponseWriter, r *http.Request) {
+	streamURL := r.URL.Query().Get("url")
+	if streamURL == "" {
+		writeError(w, http.StatusBadRequest, "url parameter is required")
+		return
+	}
+
+	hashInput := fmt.Sprintf("srt-%s", streamURL)
+	hash := sha256.Sum256([]byte(hashInput))
+	id := hex.EncodeToString(hash[:])[:16]
+
+	serverHost := r.Host
+	if strings.Contains(serverHost, ":") {
+		serverHost = strings.Split(serverHost, ":")[0]
+	}
+
+	hlsSessionsMu.Lock()
+	sess, exists := hlsSessions[id]
+	if exists {
+		sess.LastAccessed = time.Now()
+		hlsSessionsMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"srt_url": fmt.Sprintf("srt://%s:8890?streamid=read:%s", serverHost, id),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sess = &HLSSession{
+		ID:           id,
+		Dir:          "",
+		LastAccessed: time.Now(),
+		Cancel:       cancel,
+		IsPrewarm:    false,
+		Done:         make(chan struct{}),
+	}
+	hlsSessions[id] = sess
+	hlsSessionsMu.Unlock()
+
+	// Push the stream to MediaMTX via SRT on port 8890
+	srtUrl := fmt.Sprintf("srt://127.0.0.1:8890?streamid=publish:%s", id)
+	
+	args := []string{
+		"-y", "-hide_banner", "-loglevel", "warning",
+		"-i", streamURL,
+		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+		"-c:a", "aac", "-ac", "2",
+		"-f", "mpegts", srtUrl,
+	}
+
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	
+	logFile, err := os.OpenFile(filepath.Join(os.TempDir(), "srt_ffmpeg.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
+	if err == nil {
+		cmd.Stderr = logFile
+	}
+	
+	sess.Cmd = cmd
+
+	if err := cmd.Start(); err != nil {
+		sess.Cancel()
+		close(sess.Done)
+		writeError(w, http.StatusInternalServerError, "failed to start srt transcoder")
+		return
+	}
+
+	go func(id string, session *HLSSession) {
+		err := cmd.Wait()
+		if err != nil {
+			fmt.Printf("[SRT] ffmpeg exited for session %s: %v\n", id, err)
+		}
+
+		hlsSessionsMu.Lock()
+		active, exists := hlsSessions[id]
+		if exists && active == session {
+			delete(hlsSessions, id)
+		}
+		hlsSessionsMu.Unlock()
+		close(session.Done)
+	}(id, sess)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"srt_url": fmt.Sprintf("srt://%s:8890?streamid=read:%s", serverHost, id),
+	})
+}
+

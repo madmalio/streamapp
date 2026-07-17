@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebRTC WHEP Test</title>
+    <style>
+        body { font-family: sans-serif; background: #1a1a1a; color: white; margin: 0; padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        video { width: 100%; max-height: 70vh; background: black; margin-top: 20px; border-radius: 8px; }
+        .controls { display: flex; gap: 10px; margin-top: 20px; }
+        input { flex: 1; padding: 10px; border-radius: 4px; border: 1px solid #444; background: #222; color: white; }
+        button { padding: 10px 20px; border-radius: 4px; border: none; background: #007bff; color: white; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        .status { margin-top: 10px; color: #aaa; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>HDHomeRun WebRTC Test</h2>
+        <p>1. Start MediaMTX on your Linux server.</p>
+        <p>2. Open the URL: <code>http://192.168.4.143:8080/api/streams/start_webrtc?url=http://192.168.x.x:5004/auto/v2.1</code> in your browser to kickstart the Go backend.</p>
+        <p>3. Copy the <code>webrtc_url</code> from the JSON response and paste it below (e.g. <code>http://192.168.4.143:8889/xxxxxx/whep</code>).</p>
+        
+        <div class="controls">
+            <input type="text" id="whepUrl" placeholder="Enter WHEP URL here (e.g. http://192.168.4.143:8889/xxxx/whep)">
+            <button onclick="startPlayback()">Play WebRTC</button>
+            <button onclick="stopPlayback()" style="background: #dc3545;">Stop</button>
+        </div>
+        
+        <div class="status" id="status">Status: Waiting for input...</div>
+        <video id="videoElement" controls autoplay muted playsinline></video>
+    </div>
+
+    <script>
+        let pc = null;
+        
+        async function startPlayback() {
+            const url = document.getElementById('whepUrl').value.trim();
+            if (!url) {
+                alert("Please enter a WHEP URL");
+                return;
+            }
+            
+            stopPlayback();
+            document.getElementById('status').innerText = "Status: Connecting...";
+            
+            pc = new RTCPeerConnection();
+            
+            pc.addTransceiver('video', {direction: 'recvonly'});
+            pc.addTransceiver('audio', {direction: 'recvonly'});
+            
+            pc.ontrack = (event) => {
+                document.getElementById('status').innerText = "Status: Playing!";
+                const video = document.getElementById('videoElement');
+                if (video.srcObject !== event.streams[0]) {
+                    video.srcObject = event.streams[0];
+                }
+            };
+            
+            pc.onconnectionstatechange = () => {
+                document.getElementById('status').innerText = "Status: " + pc.connectionState;
+            };
+
+            try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/sdp' },
+                    body: offer.sdp
+                });
+                
+                if (!response.ok) {
+                    throw new Error("WHEP Server responded with " + response.status);
+                }
+                
+                const answerSdp = await response.text();
+                await pc.setRemoteDescription(new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: answerSdp
+                }));
+            } catch (err) {
+                console.error(err);
+                document.getElementById('status').innerText = "Status: Error - " + err.message;
+            }
+        }
+        
+        function stopPlayback() {
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+            document.getElementById('videoElement').srcObject = null;
+            document.getElementById('status').innerText = "Status: Stopped";
+        }
+    </script>
+</body>
+</html>

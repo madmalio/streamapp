@@ -123,6 +123,29 @@ class ApiService {
     return HlsStreamSession(url: absoluteUrl, sessionId: sessionId);
   }
 
+  Future<String> startSrtStream(String rawUrl) async {
+    final response = await http.get(Uri.parse('$baseUrl/streams/start_srt?url=${Uri.encodeComponent(rawUrl)}'));
+    if (response.statusCode == 200) {
+      final json = jsonDecode(response.body);
+      return json['srt_url'];
+    } else {
+      throw Exception('Failed to start SRT stream');
+    }
+  }
+
+  Future<HlsStreamSession> startWebRTCStream(String rawUrl) async {
+    final response = await http.get(Uri.parse('$baseUrl/streams/start_webrtc?url=${Uri.encodeComponent(rawUrl)}'));
+    if (response.statusCode == 200) {
+      final json = jsonDecode(response.body);
+      return HlsStreamSession(
+        url: json['webrtc_url'],
+        sessionId: json['session_id'],
+      );
+    } else {
+      throw Exception('Failed to start WebRTC stream');
+    }
+  }
+
   Future<HlsStreamSession?> prewarmHlsStream(String rawUrl, {String? bitrate, String? engine}) async {
     try {
       final targetBitrate = bitrate ?? await getRecommendedBitrate(forceRefresh: false, fallbackOnUnknown: true);

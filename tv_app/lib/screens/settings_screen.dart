@@ -152,6 +152,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     DropdownMenuItem(value: 'Auto', child: Text('Auto (Network Recommended)')),
                     DropdownMenuItem(value: 'Original', child: Text('Original (Direct Playback)')),
                     DropdownMenuItem(value: 'Original HLS', child: Text('Original (HLS Transmux)')),
+                    DropdownMenuItem(value: 'WebRTC', child: Text('WebRTC (Ultra Low Latency)')),
                     DropdownMenuItem(value: '8M', child: Text('8 Mbps HLS Transcode')),
                     DropdownMenuItem(value: '4M', child: Text('4 Mbps HLS Transcode')),
                     DropdownMenuItem(value: '3M', child: Text('3 Mbps HLS Transcode')),
