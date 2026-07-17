@@ -1,51 +1,31 @@
 # StreamApp Handoff
 
-## Current State
+## Current Architecture (Hybrid HLS)
 - The user is building `streamapp`, a Flutter TV app (`tv_app`) and a Go backend (`backend`) for HDHomeRun live TV.
-- Backend and app were heavily updated during this session. Current code now supports:
-  - FFmpeg VAAPI transcode path (HLS fMP4 by default)
-  - Fast-start query mode (`fast=1`)
-  - Prewarm session classification (`prewarm=1`) with shorter timeout
-  - Transmux test mode (`transmux=1`)
-  - App-side `Original HLS` quality option (transmux test lane)
-- API base URL is configurable in app settings and persisted in SharedPreferences.
+- We successfully refactored the streaming engine to a **Hybrid Architecture** leveraging MediaMTX to achieve zero-buffering / zero-disk-I/O:
+  - **Go Backend:** Responsible for translating API calls from Flutter, managing the FFmpeg/GStreamer lifecycles, and instantly killing transcoding processes to instantly free tuners.
+  - **FFmpeg/GStreamer:** Now pushes the stream *directly* into MediaMTX via RTSP (FFmpeg) or SRT (GStreamer) instead of writing `.ts` chunks to SSD.
+  - **MediaMTX:** Demuxes the RTSP/SRT streams and hosts the LL-HLS segments in RAM (`http://<ip>:8888/hls_<id>/index.m3u8`).
+- **MediaMTX Config**: The user's `mediamtx.yml` is heavily customized using regex paths. To allow the Go backend to publish streams, an `all_others:` catch-all path was added to `mediamtx.yml`.
 
 ## Important Environment / Ops Notes
 - Home server target IP in session: `192.168.4.143`.
-- HDHomeRun source used most in testing: `http://192.168.4.22:5004/auto/v7.1` (also `v13.1` and others).
-- Backend runtime envs commonly used:
-  - `FFMPEG_VAAPI_DEVICE=/dev/dri/renderD128`
-  - `FFMPEG_HLS_START_TIMEOUT_SECONDS=90`
-  - `FFMPEG_HLS_SESSION_TIMEOUT_SECONDS=300`
-  - `FFMPEG_HLS_PREWARM_TIMEOUT_SECONDS=30`
-- Immediate tuner release command when stuck:
-  - `curl -s "http://127.0.0.1:8080/api/streams/stop_all"`
+- SSH User: `mark`
+- Deployment commands (IMPORTANT: AI must provide these exactly when modifying backend code):
+  - Push: `scp backend/internal/handlers/handlers.go mark@192.168.4.143:/home/mark/streamapp/backend/internal/handlers/`
+  - Build: `go build -o streamapp-backend ./cmd/server`
+  - Run: `./streamapp-backend`
 
-## What Was Proven
-- VAAPI FFmpeg transcode is functional and can run >1.0x on tested channels.
-- fMP4 HLS looked good in quality tests.
-- GStreamer is installed on server and can produce HLS output.
-- A working GStreamer baseline pipeline was found with relatively good startup:
-  - `souphttpsrc` + `decodebin`
-  - `videoconvert ! video/x-raw,format=NV12 ! vaapih264enc bitrate=4500 keyframe-period=60`
-  - `hlssink2 target-duration=4 playlist-length=6 max-files=20`
+## What Was Proven & Modified Today
+- Old WebRTC routing in the Go backend was deleted because the Flutter app now directly contacts MediaMTX's `runOnDemand` WHEP path for WebRTC.
+- The GStreamer pipeline was aggressively optimized for low latency (`latency=0`, `max-bframes=0`, `config-interval=-1`, `alignment=7`) and pushes to MediaMTX via `srtclientsink`.
+- The FFmpeg pipeline was modified to push to MediaMTX via `rtsp`.
+- The Go backend now polls localhost (`127.0.0.1:8888/hls_<id>/index.m3u8`) to verify when MediaMTX is ready, preventing firewall loopback issues.
 
 ## Current Problem (End of Session)
-- User still sees startup/sustained buffering in app under some paths.
-- Prewarm experiments caused tuner contention and stuck tuners; client prewarm was disabled in guide screen for stability.
-- GStreamer experiments showed promising startup but inconsistent long-run behavior and occasional artifacts depending on pipeline variant.
-- User explicitly wants to continue evaluating GStreamer and compare it against FFmpeg in app context.
-
-## User Preference / Direction for Next Chat
-- The user wants to continue with **GStreamer exploration**, not default back to FFmpeg-only discussions.
-- Keep the process simple and avoid overcomplicated steps.
-- Prioritize practical in-app comparison and reproducible test flows.
+- We finalized the Hybrid HLS Architecture. FFmpeg was proven to be extremely fast. GStreamer was slightly slower to start up due to pipeline initialization, but the user is about to test the aggressively optimized GStreamer pipeline provided right at the end of the session.
 
 ## Next Steps (Recommended)
-1. Validate one stable GStreamer pipeline and freeze it as baseline (no further speculative variants until measured).
-2. Add a clean app toggle/path for FFmpeg vs GStreamer stream source so A/B testing is one click.
-3. Measure and compare:
-   - time-to-first-frame
-   - 5-minute buffering behavior
-   - tuner lock/release behavior
-4. Only then decide whether to keep FFmpeg, move to GStreamer, or run hybrid.
+1. Get the user's feedback on whether the new optimized GStreamer pipeline starts up fast enough.
+2. Address any remaining custom UI overlay tasks in `player_screen.dart` (the user previously mentioned that the `media_kit_video` `MaterialDesktopVideoControlsTheme` absorbs touch events, requiring overlays to be placed outside the bottom control bar).
+3. If HLS latency is still an issue, continue optimizing MediaMTX's `hlsSegmentDuration` and `hlsPartDuration`.

@@ -7,3 +7,7 @@
 - Keep suggested workflows simple and actionable. Avoid over-complicating test instructions.
 - If tuner lock issues appear, first run backend cleanup (`/api/streams/stop_all`) and verify no orphan FFmpeg/GStreamer processes before deeper changes.
 - Preserve the existing FFmpeg path as fallback, but do not force conversation direction away from GStreamer testing unless the user asks.
+- **Deployment & Testing Workflow**: When providing code updates for the backend, ALWAYS provide the exact push and run commands using the user's specific credentials:
+  - `scp backend/internal/handlers/handlers.go mark@192.168.4.143:/home/mark/streamapp/backend/internal/handlers/`
+  - `go build -o streamapp-backend ./cmd/server`
+  - `./streamapp-backend`

@@ -79,8 +79,6 @@ func main() {
 		// Streaming Endpoints
 		api.Get("/streams/play", handlers.PlayStream)
 		api.Get("/streams/start", handlers.StartHLSStream)
-		api.Get("/streams/start_webrtc", handlers.StartWebRTCStream)
-		api.Get("/streams/start_srt", handlers.StartSRTStream)
 		api.Get("/streams/stop", handlers.StopHLSStream)
 		api.Get("/streams/stop_all", handlers.StopAllStreams)
 		api.Get("/streams/hls/{id}/*", handlers.ServeHLSSegments)

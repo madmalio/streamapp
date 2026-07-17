@@ -793,16 +793,22 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	hash := sha256.Sum256([]byte(hashInput))
 	id := hex.EncodeToString(hash[:])[:16]
 
+	// Determine the server IP from the request host
+	serverHost := r.Host
+	if strings.Contains(serverHost, ":") {
+		serverHost = strings.Split(serverHost, ":")[0]
+	}
+
 	hlsSessionsMu.Lock()
 	sess, exists := hlsSessions[id]
 	if exists {
-		if !prewarm && sess.IsPrewarm {
+		if !prewarm {
 			sess.IsPrewarm = false
 		}
 		sess.LastAccessed = time.Now()
 		hlsSessionsMu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"hls_url": fmt.Sprintf("/api/streams/hls/%s/stream.m3u8", id),
+			"hls_url": fmt.Sprintf("http://%s:8888/hls_%s/index.m3u8", serverHost, id),
 		})
 		return
 	}
@@ -839,13 +845,9 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 
 	probeSize := "20M"
 	analyzeDuration := "20M"
-	hlsTime := "2"
-	hlsListSize := "8"
 	if fastSwitch {
 		probeSize = "500k"
 		analyzeDuration = "500k"
-		hlsTime = "1"
-		hlsListSize = "4"
 	}
 
 	binaryName := "ffmpeg"
@@ -883,7 +885,9 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		defaultGstPipeline := `-e souphttpsrc location={url} is-live=true do-timestamp=true keep-alive=true blocksize=16384 ! decodebin name=dec dec. ! queue max-size-buffers={queue_buffers} max-size-time=0 max-size-bytes=0 ! videoconvert ! video/x-raw,format=NV12 ! vaapih264enc bitrate={bitrate} keyframe-period=60 rate-control=vbr quality-level=5 ! h264parse config-interval=1 ! queue max-size-buffers={queue_buffers} ! hls.video dec. ! queue max-size-buffers={queue_buffers} max-size-time=0 max-size-bytes=0 ! audioconvert ! audioresample ! volume volume=1.8 ! voaacenc bitrate=128000 ! aacparse ! queue max-size-buffers={queue_buffers} ! hls.audio hlssink2 name=hls playlist-location={playlist} location={segment} target-duration={time} playlist-length={list_size} max-files=20`
+		// Use SRT to push to MediaMTX
+		// Highly optimized low-latency GStreamer pipeline
+		defaultGstPipeline := `-e souphttpsrc location={url} is-live=true do-timestamp=true keep-alive=true blocksize=16384 ! decodebin name=dec dec. ! queue max-size-buffers={queue_buffers} max-size-time=0 max-size-bytes=0 ! videoconvert ! video/x-raw,format=NV12 ! vaapih264enc bitrate={bitrate} keyframe-period=30 max-bframes=0 rate-control=vbr quality-level=5 ! h264parse config-interval=-1 ! queue max-size-buffers={queue_buffers} ! mpegtsmux name=mux alignment=7 ! srtclientsink uri="srt://127.0.0.1:8890?streamid=publish:hls_{id}" latency=0 dec. ! queue max-size-buffers={queue_buffers} max-size-time=0 max-size-bytes=0 ! audioconvert ! audioresample ! volume volume=1.8 ! voaacenc bitrate=128000 ! aacparse ! queue max-size-buffers={queue_buffers} ! mux.`
 		pipelineStr := os.Getenv("GSTREAMER_PIPELINE")
 		if pipelineStr == "" {
 			pipelineStr = defaultGstPipeline
@@ -896,6 +900,8 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 		pipelineStr = strings.ReplaceAll(pipelineStr, "{queue_buffers}", gstQueueBuffers)
 		pipelineStr = strings.ReplaceAll(pipelineStr, "{segment}", segmentPath)
 		pipelineStr = strings.ReplaceAll(pipelineStr, "{playlist}", playlistPath)
+		pipelineStr = strings.ReplaceAll(pipelineStr, "{id}", id)
+		pipelineStr = strings.ReplaceAll(pipelineStr, "{id}", id)
 
 		args = strings.Fields(pipelineStr)
 	} else if transmux {
@@ -911,12 +917,8 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 			"-sn",
 			"-c:v", "copy",
 			"-c:a", "copy",
-			"-f", "hls",
-			"-hls_time", hlsTime,
-			"-hls_list_size", hlsListSize,
-			"-hls_flags", "delete_segments+append_list+omit_endlist",
-			"-hls_segment_filename", segmentPath,
-			playlistPath,
+			"-f", "rtsp", "-rtsp_transport", "tcp", "-pkt_size", "1200", fmt.Sprintf("rtsp://127.0.0.1:8554/hls_%s", id),
+
 		}
 	} else {
 		// Resilient Intel VAAPI hardware pipeline for dirty OTA MPEG-TS feeds.
@@ -950,25 +952,8 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 			"-b:a", "128k",
 			"-ac", "2",
 			"-ar", "48000",
-			"-f", "hls",
-			"-hls_time", hlsTime,
-			"-hls_list_size", hlsListSize,
+			"-f", "rtsp", "-rtsp_transport", "tcp", "-pkt_size", "1200", fmt.Sprintf("rtsp://127.0.0.1:8554/hls_%s", id),
 		}
-
-		if fastSwitch {
-			args = append(args, "-hls_flags", "delete_segments+append_list+omit_endlist")
-		} else {
-			args = append(args,
-				"-hls_flags", "delete_segments+append_list+independent_segments+omit_endlist",
-				"-hls_segment_type", "fmp4",
-				"-hls_fmp4_init_filename", "init.mp4",
-			)
-		}
-
-		args = append(args,
-			"-hls_segment_filename", segmentPath,
-			playlistPath,
-		)
 	}
 
 	cmd := exec.CommandContext(ctx, binaryName, args...)
@@ -1026,38 +1011,37 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 		close(session.Done)
 	}(id, sess)
 
-	// Wait for the m3u8 file to be created and contain at least one segment entry before returning
-	startupTimeout := 60 * time.Second
-	if rawTimeout := strings.TrimSpace(os.Getenv("FFMPEG_HLS_START_TIMEOUT_SECONDS")); rawTimeout != "" {
-		if seconds, err := strconv.Atoi(rawTimeout); err == nil && seconds > 0 {
-			startupTimeout = time.Duration(seconds) * time.Second
-		}
-	}
+	// Wait for MediaMTX to start serving the HLS stream
+	mediaMTXUrl := fmt.Sprintf("http://%s:8888/hls_%s/index.m3u8", serverHost, id)
+
+	startupTimeout := 15 * time.Second
 	deadline := time.Now().Add(startupTimeout)
 	found := false
+	
+	// Poll localhost to avoid firewall/NAT loopback issues on the server
+	pollUrl := fmt.Sprintf("http://127.0.0.1:8888/hls_%s/index.m3u8", id)
+	
 	for time.Now().Before(deadline) {
-		playlistFile := filepath.Join(tempDir, "stream.m3u8")
-		if _, err := os.Stat(playlistFile); err == nil {
-			content, err := os.ReadFile(playlistFile)
-			if err == nil {
-				contentStr := string(content)
-				if strings.Contains(contentStr, "segment_") || strings.Contains(contentStr, ".ts") || strings.Contains(contentStr, ".m4s") {
-					found = true
-					break
-				}
-			}
+		resp, err := http.Get(pollUrl)
+		if err == nil && resp.StatusCode == 200 {
+			found = true
+			resp.Body.Close()
+			break
 		}
-		time.Sleep(250 * time.Millisecond)
+		if err == nil {
+			resp.Body.Close()
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	if !found {
 		sess.Cancel()
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("%s failed to create stream.m3u8 in time with segments", binaryName))
+		writeError(w, http.StatusInternalServerError, "Failed to connect to MediaMTX HLS stream in time")
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"hls_url": fmt.Sprintf("/api/streams/hls/%s/stream.m3u8", id),
+		"hls_url": mediaMTXUrl,
 	})
 }
 
@@ -1145,184 +1129,3 @@ func ServeHLSSegments(w http.ResponseWriter, r *http.Request) {
 
 	http.ServeFile(w, r, filePath)
 }
-
-// StartWebRTCStream publishes an HDHomeRun stream to a local MediaMTX instance via RTSP.
-func StartWebRTCStream(w http.ResponseWriter, r *http.Request) {
-	streamURL := r.URL.Query().Get("url")
-	if streamURL == "" {
-		writeError(w, http.StatusBadRequest, "url parameter is required")
-		return
-	}
-
-	hashInput := fmt.Sprintf("webrtc-%s", streamURL)
-	hash := sha256.Sum256([]byte(hashInput))
-	id := hex.EncodeToString(hash[:])[:16]
-
-	// Determine the server IP from the request host
-	serverHost := r.Host
-	if strings.Contains(serverHost, ":") {
-		serverHost = strings.Split(serverHost, ":")[0]
-	}
-
-	hlsSessionsMu.Lock()
-	sess, exists := hlsSessions[id]
-	if exists {
-		sess.LastAccessed = time.Now()
-		hlsSessionsMu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"webrtc_url": fmt.Sprintf("http://%s:8889/%s/whep", serverHost, id),
-		})
-		return
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	sess = &HLSSession{
-		ID:           id,
-		Dir:          "", // No dir needed for WebRTC
-		LastAccessed: time.Now(),
-		Cancel:       cancel,
-		IsPrewarm:    false,
-		Done:         make(chan struct{}),
-	}
-	hlsSessions[id] = sess
-	hlsSessionsMu.Unlock()
-
-	// Push the stream to MediaMTX via RTSP on port 8554
-	rtspUrl := fmt.Sprintf("rtsp://127.0.0.1:8554/%s", id)
-
-	args := []string{
-		"-y", "-hide_banner", "-loglevel", "warning",
-		"-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD128", "-hwaccel_output_format", "vaapi",
-		"-i", streamURL,
-		"-vf", "deinterlace_vaapi",
-		"-c:v", "h264_vaapi", "-bf", "0", "-sei", "0", "-b:v", "3M", "-maxrate", "3M", "-bufsize", "6M",
-		"-c:a", "libopus", "-ac", "2",
-		"-f", "rtsp", "-rtsp_transport", "tcp", "-pkt_size", "1200", rtspUrl,
-	}
-
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	
-	// Create a log file to capture why GStreamer might crash
-	logFile, err := os.OpenFile(filepath.Join(os.TempDir(), "webrtc_gst.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
-	if err == nil {
-		cmd.Stderr = logFile
-	}
-	
-	sess.Cmd = cmd
-
-	if err := cmd.Start(); err != nil {
-		sess.Cancel()
-		close(sess.Done)
-		writeError(w, http.StatusInternalServerError, "failed to start webrtc transcoder")
-		return
-	}
-
-	go func(id string, session *HLSSession) {
-		err := cmd.Wait()
-		if err != nil {
-			fmt.Printf("[WebRTC] ffmpeg exited for session %s: %v\n", id, err)
-		}
-
-		hlsSessionsMu.Lock()
-		active, exists := hlsSessions[id]
-		if exists && active == session {
-			delete(hlsSessions, id)
-		}
-		hlsSessionsMu.Unlock()
-		close(session.Done)
-	}(id, sess)
-
-	// Since we don't need to wait for chunks, we can just return immediately!
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"webrtc_url": fmt.Sprintf("http://%s:8889/%s/whep", serverHost, id),
-		"session_id": id,
-	})
-}
-
-// StartSRTStream publishes an HDHomeRun stream to a local MediaMTX instance via SRT.
-func StartSRTStream(w http.ResponseWriter, r *http.Request) {
-	streamURL := r.URL.Query().Get("url")
-	if streamURL == "" {
-		writeError(w, http.StatusBadRequest, "url parameter is required")
-		return
-	}
-
-	hashInput := fmt.Sprintf("srt-%s", streamURL)
-	hash := sha256.Sum256([]byte(hashInput))
-	id := hex.EncodeToString(hash[:])[:16]
-
-	serverHost := r.Host
-	if strings.Contains(serverHost, ":") {
-		serverHost = strings.Split(serverHost, ":")[0]
-	}
-
-	hlsSessionsMu.Lock()
-	sess, exists := hlsSessions[id]
-	if exists {
-		sess.LastAccessed = time.Now()
-		hlsSessionsMu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"srt_url": fmt.Sprintf("srt://%s:8890?streamid=read:%s", serverHost, id),
-		})
-		return
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	sess = &HLSSession{
-		ID:           id,
-		Dir:          "",
-		LastAccessed: time.Now(),
-		Cancel:       cancel,
-		IsPrewarm:    false,
-		Done:         make(chan struct{}),
-	}
-	hlsSessions[id] = sess
-	hlsSessionsMu.Unlock()
-
-	// Push the stream to MediaMTX via SRT on port 8890
-	srtUrl := fmt.Sprintf("srt://127.0.0.1:8890?streamid=publish:%s", id)
-	
-	args := []string{
-		"-y", "-hide_banner", "-loglevel", "warning",
-		"-i", streamURL,
-		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-		"-c:a", "aac", "-ac", "2",
-		"-f", "mpegts", srtUrl,
-	}
-
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	
-	logFile, err := os.OpenFile(filepath.Join(os.TempDir(), "srt_ffmpeg.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
-	if err == nil {
-		cmd.Stderr = logFile
-	}
-	
-	sess.Cmd = cmd
-
-	if err := cmd.Start(); err != nil {
-		sess.Cancel()
-		close(sess.Done)
-		writeError(w, http.StatusInternalServerError, "failed to start srt transcoder")
-		return
-	}
-
-	go func(id string, session *HLSSession) {
-		err := cmd.Wait()
-		if err != nil {
-			fmt.Printf("[SRT] ffmpeg exited for session %s: %v\n", id, err)
-		}
-
-		hlsSessionsMu.Lock()
-		active, exists := hlsSessions[id]
-		if exists && active == session {
-			delete(hlsSessions, id)
-		}
-		hlsSessionsMu.Unlock()
-		close(session.Done)
-	}(id, sess)
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"srt_url": fmt.Sprintf("srt://%s:8890?streamid=read:%s", serverHost, id),
-	})
-}
-

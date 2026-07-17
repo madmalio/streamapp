@@ -191,11 +191,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
       if (targetBitrate == 'WebRTC') {
         try {
-          final session = await _api.startWebRTCStream(widget.channel.streamUrl);
+          // Extract dynamic tuner IP and channel number from the streamUrl
+          final uri = Uri.parse(widget.channel.streamUrl);
+          final tunerIp = uri.host;
+          final channelNumber = uri.pathSegments.last.replaceAll('v', '');
+          final whepUrl = 'http://192.168.4.143:8889/channel/$tunerIp/$channelNumber/whep';
           if (!mounted || requestToken != _switchToken) return;
-          await _startWebRTC(session.url);
-          // Set the active session ID so that dispose() stops the WebRTC transcoder!
-          _activeHlsSessionId = session.sessionId;
+          await _startWebRTC(whepUrl);
         } catch (_) {
           // Fallback if WebRTC fails
           await _openAndForcePlay(widget.streamUrl);

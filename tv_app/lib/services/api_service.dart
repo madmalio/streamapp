@@ -106,14 +106,13 @@ class ApiService {
     }
 
     final json = jsonDecode(response.body);
-    final relativePath = json['hls_url'] as String?;
-    if (relativePath == null || relativePath.isEmpty) {
+    final absoluteUrl = json['hls_url'] as String?;
+    if (absoluteUrl == null || absoluteUrl.isEmpty) {
       throw Exception('Missing hls_url in response');
     }
 
-    final host = baseUrl.replaceAll('/api', '');
-    final absoluteUrl = '$host$relativePath';
-    final match = RegExp(r'/streams/hls/([^/]+)/stream\.m3u8').firstMatch(relativePath);
+    // URL is like: http://<ip>:8888/hls_<id>/index.m3u8
+    final match = RegExp(r'/hls_([^/]+)/index\.m3u8').firstMatch(absoluteUrl);
     final sessionId = match?.group(1);
 
     if (sessionId == null || sessionId.isEmpty) {
@@ -133,18 +132,7 @@ class ApiService {
     }
   }
 
-  Future<HlsStreamSession> startWebRTCStream(String rawUrl) async {
-    final response = await http.get(Uri.parse('$baseUrl/streams/start_webrtc?url=${Uri.encodeComponent(rawUrl)}'));
-    if (response.statusCode == 200) {
-      final json = jsonDecode(response.body);
-      return HlsStreamSession(
-        url: json['webrtc_url'],
-        sessionId: json['session_id'],
-      );
-    } else {
-      throw Exception('Failed to start WebRTC stream');
-    }
-  }
+
 
   Future<HlsStreamSession?> prewarmHlsStream(String rawUrl, {String? bitrate, String? engine}) async {
     try {
