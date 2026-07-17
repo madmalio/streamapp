@@ -1,14 +1,41 @@
-# Node.js
+# Go Backend
+backend/streamapp-server
+backend/server.exe
+backend/server
+backend/*.exe
+backend/*.exe~
+backend/*.dll
+backend/*.so
+backend/*.dylib
+backend/*.test
+backend/*.out
+backend/vendor/
+backend/streamapp_hls/
+
+# Flutter / Dart
+tv_app/.dart_tool/
+tv_app/.packages
+tv_app/.pub/
+tv_app/.pub-cache/
+tv_app/build/
+tv_app/coverage/
+tv_app/lib/generated_plugin_registrant.dart
+
+# Node.js (from previous gitignore)
 node_modules/
 dist/
 build/
 .env
 
-# Go
-backend/server.exe
-backend/server
-*.exe
+# macOS
+.DS_Store
 
-# IDE
-.vscode/
+# Windows
+Thumbs.db
+Desktop.ini
+
+# IDEs and Editors
 .idea/
+.vscode/
+*.swp
+*.swo
