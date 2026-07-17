@@ -26,6 +26,7 @@ class PlayerScreen extends StatefulWidget {
 class _PlayerScreenState extends State<PlayerScreen> {
   Player? player;
   VideoController? controller;
+  bool _isChangingQuality = false;
 
   String _currentBitrate = 'Original';
   String? _activeHlsSessionId;
@@ -43,9 +44,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     '1.5M',
   ];
 
+  late ApiService _api;
+
   @override
   void initState() {
     super.initState();
+    _api = context.read<ApiService>();
     final settings = context.read<AppSettings>();
     _currentEngine = settings.streamingEngine;
     _bootstrapPlayback();
@@ -74,11 +78,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> _openAndForcePlay(String url) async {
     if (player == null) return;
-
     await player!.open(Media(url), play: true);
     await player!.play();
 
-    // Catch potential platform pauses directly after stream initialization shifts
     unawaited(
       Future<void>.delayed(const Duration(milliseconds: 350), () async {
         if (mounted && player != null && !player!.state.playing) {
@@ -99,6 +101,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final prefs = await SharedPreferences.getInstance();
     final savedVolume = prefs.getDouble('player_volume') ?? 100.0;
 
+    // Media Kit Engine Setup
     player = Player();
     controller = VideoController(player!);
 
@@ -115,7 +118,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (player?.platform is! NativePlayer) return;
       final nativePlayer = player!.platform as NativePlayer;
 
-      // Force libmpv down into a live real-time state mirroring standalone VLC configurations
       await nativePlayer.setProperty('profile', 'low-latency');
       await nativePlayer.setProperty('cache', 'no');
       await nativePlayer.setProperty('video-sync', 'audio');
@@ -134,26 +136,36 @@ class _PlayerScreenState extends State<PlayerScreen> {
     bool preferFastSwitch = false,
   }) async {
     final isPlaying = player?.state.playing ?? false;
-    if (bitrate == _currentBitrate && isPlaying) return;
 
+    if (bitrate == _currentBitrate && isPlaying) return;
+    if (_isChangingQuality) return;
+
+    _isChangingQuality = true;
     final requestToken = ++_switchToken;
     setState(() => _currentBitrate = bitrate);
 
-    String? pendingSessionId;
-
     try {
-      final api = Provider.of<ApiService>(context, listen: false);
       final oldSessionId = _activeHlsSessionId;
 
+      // Aggressively stop the player to instantly sever any direct TCP connections to the HDHomeRun 
+      // (crucial if we are currently playing the 'Original' direct stream).
+      // We load an empty string to force mpv to drop the socket, as stop() sometimes caches it.
+      await player?.open(Media(''), play: false);
+
+      // Aggressively stop the old HLS stream before starting the new one.
+      // This is absolutely critical for HDHomeRun tuners which cannot pool connections.
       if (oldSessionId != null) {
         _activeHlsSessionId = null;
-        await api.stopStream(oldSessionId);
-        await Future<void>.delayed(const Duration(milliseconds: 350));
+        await _api.stopStream(oldSessionId);
       }
+      
+      // Wait a grace period to ensure the HDHomeRun has fully cleared the tuner state internally.
+      // Embedded devices often take 1-2 seconds to register a closed TCP socket and free the physical tuner.
+      await Future<void>.delayed(const Duration(milliseconds: 2000));
 
       String targetBitrate = bitrate;
       if (bitrate == 'Auto') {
-        targetBitrate = await api.getRecommendedBitrate(
+        targetBitrate = await _api.getRecommendedBitrate(
           forceRefresh: refreshAutoRecommendation,
           fallbackOnUnknown: fallbackOnUnknownAuto,
         );
@@ -164,60 +176,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
       if (targetBitrate == 'Original') {
         await _openAndForcePlay(widget.streamUrl);
-        final oldSessionId = _activeHlsSessionId;
-        _activeHlsSessionId = null;
-        if (oldSessionId != null) {
-          unawaited(api.stopStream(oldSessionId));
-        }
         return;
       }
 
+      HlsStreamSession session;
       if (targetBitrate == 'Original HLS') {
-        final session = await api.startHlsStream(
+        session = await _api.startHlsStream(
           widget.channel.streamUrl,
           bitrate: 'Original',
           fast: preferFastSwitch,
           transmux: true,
           engine: _currentEngine,
         );
-        pendingSessionId = session.sessionId;
-        if (!mounted || requestToken != _switchToken) {
-          unawaited(api.stopStream(session.sessionId));
-          return;
-        }
-
-        final previousSessionId = _activeHlsSessionId;
-        await _openAndForcePlay(session.url);
-        _activeHlsSessionId = session.sessionId;
-        pendingSessionId = null;
-
-        if (previousSessionId != null &&
-            previousSessionId != session.sessionId) {
-          unawaited(api.stopStream(previousSessionId));
-        }
-        return;
-      }
-
-      HlsStreamSession session;
-      try {
-        session = await api.startHlsStream(
-          widget.channel.streamUrl,
-          bitrate: targetBitrate,
-          fast: preferFastSwitch,
-          engine: _currentEngine,
-        );
-      } catch (_) {
+      } else {
         try {
-          session = await api.startHlsStream(
+          session = await _api.startHlsStream(
             widget.channel.streamUrl,
             bitrate: targetBitrate,
-            fast: false,
+            fast: preferFastSwitch,
             engine: _currentEngine,
           );
         } catch (_) {
-          await api.stopAllStreams();
-          await Future<void>.delayed(const Duration(milliseconds: 350));
-          session = await api.startHlsStream(
+          // If the first attempt failed, the tuner might be stuck. Nuke everything and retry.
+          await _api.stopAllStreams();
+          await Future<void>.delayed(const Duration(milliseconds: 2000));
+          session = await _api.startHlsStream(
             widget.channel.streamUrl,
             bitrate: targetBitrate,
             fast: false,
@@ -226,32 +209,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
         }
       }
 
-      pendingSessionId = session.sessionId;
       if (!mounted || requestToken != _switchToken) {
-        unawaited(api.stopStream(session.sessionId));
+        unawaited(_api.stopStream(session.sessionId));
         return;
       }
 
-      final previousSessionId = _activeHlsSessionId;
       await _openAndForcePlay(session.url);
       _activeHlsSessionId = session.sessionId;
-      pendingSessionId = null;
-
-      if (previousSessionId != null && previousSessionId != session.sessionId) {
-        unawaited(api.stopStream(previousSessionId));
-      }
     } catch (e) {
       if (!mounted) return;
-      try {
-        final api = Provider.of<ApiService>(context, listen: false);
-        if (pendingSessionId != null) {
-          unawaited(api.stopStream(pendingSessionId));
-        }
-      } catch (_) {}
-
-      final isPlaying = player?.state.playing ?? false;
-      if (mounted && !isPlaying) {
+      // Fallback if everything failed (tuner exhausted or backend offline)
+      if (!isPlaying) {
         await _openAndForcePlay(widget.streamUrl);
+      }
+    } finally {
+      if (mounted) {
+        _isChangingQuality = false;
       }
     }
   }
@@ -280,10 +253,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void dispose() {
     _volumeSubscription?.cancel();
     try {
-      final api = Provider.of<ApiService>(context, listen: false);
       final sessionId = _activeHlsSessionId;
       if (sessionId != null) {
-        unawaited(api.stopStream(sessionId));
+        unawaited(_api.stopStream(sessionId));
       }
     } catch (_) {}
 
@@ -310,28 +282,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
           children: [
             Center(
               child: MaterialDesktopVideoControlsTheme(
-                normal: MaterialDesktopVideoControlsThemeData(
-                  bottomButtonBar: [
-                    const MaterialPlayOrPauseButton(),
-                    const MaterialPositionIndicator(),
-                    const Spacer(),
-                    const MaterialDesktopVolumeButton(),
-                    const MaterialDesktopFullscreenButton(),
-                  ],
-                ),
-                fullscreen: MaterialDesktopVideoControlsThemeData(
-                  bottomButtonBar: [
-                    const MaterialPlayOrPauseButton(),
-                    const MaterialPositionIndicator(),
-                    const Spacer(),
-                    const MaterialDesktopVolumeButton(),
-                    const MaterialDesktopFullscreenButton(),
-                  ],
-                ),
-                child: controller != null
-                    ? Video(controller: controller!)
-                    : const SizedBox(),
-              ),
+                      normal: MaterialDesktopVideoControlsThemeData(
+                        bottomButtonBar: [
+                          const MaterialPlayOrPauseButton(),
+                          const MaterialPositionIndicator(),
+                          const Spacer(),
+                          const MaterialDesktopVolumeButton(),
+                          const MaterialDesktopFullscreenButton(),
+                        ],
+                      ),
+                      fullscreen: MaterialDesktopVideoControlsThemeData(
+                        bottomButtonBar: [
+                          const MaterialPlayOrPauseButton(),
+                          const MaterialPositionIndicator(),
+                          const Spacer(),
+                          const MaterialDesktopVolumeButton(),
+                          const MaterialDesktopFullscreenButton(),
+                        ],
+                      ),
+                      child: controller != null
+                          ? Video(controller: controller!)
+                          : const SizedBox(),
+                    ),
             ),
             // Channel Info Overlay
             Positioned(

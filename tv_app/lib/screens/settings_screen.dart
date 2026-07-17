@@ -15,7 +15,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isSaving = false;
   String _selectedEngine = 'ffmpeg';
   String _selectedQuality = 'Auto';
-  String _selectedPlayer = 'media_kit';
 
   @override
   void initState() {
@@ -24,7 +23,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _controller = TextEditingController(text: settings.baseUrl);
     _selectedEngine = settings.streamingEngine;
     _selectedQuality = settings.defaultQuality;
-    _selectedPlayer = settings.videoPlayer;
   }
 
   @override
@@ -51,7 +49,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await settings.setBaseUrl(input);
     await settings.setStreamingEngine(_selectedEngine);
     await settings.setDefaultQuality(_selectedQuality);
-    await settings.setVideoPlayer(_selectedPlayer);
     if (!mounted) {
       return;
     }
@@ -168,39 +165,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ),
             ),
-            const SizedBox(height: 24),
-            const Text(
-              'Video Player Backend',
-              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1A1A1A),
-                borderRadius: BorderRadius.circular(4),
-                border: Border.all(color: Colors.white24),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  value: _selectedPlayer,
-                  dropdownColor: const Color(0xFF1A1A1A),
-                  style: const TextStyle(color: Colors.white, fontSize: 16),
-                  icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
-                  isExpanded: true,
-                  items: const [
-                    DropdownMenuItem(value: 'media_kit', child: Text('MediaKit (Hardware Accelerated)')),
-                    DropdownMenuItem(value: 'vlc', child: Text('VLC (Robust Networking)')),
-                  ],
-                  onChanged: (val) {
-                    if (val != null) {
-                      setState(() => _selectedPlayer = val);
-                    }
-                  },
-                ),
-              ),
-            ),
-            const SizedBox(height: 30),
+
             ElevatedButton(
               onPressed: _isSaving ? null : _save,
               child: _isSaving

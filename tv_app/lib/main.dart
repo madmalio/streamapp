@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:media_kit/media_kit.dart';
+
 import 'package:shared_preferences/shared_preferences.dart';
 import 'screens/guide_screen.dart';
 import 'services/api_service.dart';
@@ -8,9 +9,6 @@ import 'services/app_settings.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Initialize Media Kit natively for the Windows desktop engine
-  MediaKit.ensureInitialized();
 
   const defaultApiBaseUrl = String.fromEnvironment(
     'STREAMAPP_API_BASE_URL',
@@ -24,15 +22,15 @@ Future<void> main() async {
       prefs.getString(AppSettings.streamingEngineKey) ?? 'ffmpeg';
   final initialDefaultQuality =
       prefs.getString(AppSettings.defaultQualityKey) ?? 'Auto';
-  final initialVideoPlayer =
-      prefs.getString(AppSettings.videoPlayerKey) ?? 'media_kit';
+
+
+  MediaKit.ensureInitialized();
 
   runApp(
     StreamApp(
       initialBaseUrl: initialBaseUrl,
       initialStreamingEngine: initialStreamingEngine,
       initialDefaultQuality: initialDefaultQuality,
-      initialVideoPlayer: initialVideoPlayer,
     ),
   );
 }
@@ -43,13 +41,11 @@ class StreamApp extends StatelessWidget {
     required this.initialBaseUrl,
     required this.initialStreamingEngine,
     required this.initialDefaultQuality,
-    required this.initialVideoPlayer,
   });
 
   final String initialBaseUrl;
   final String initialStreamingEngine;
   final String initialDefaultQuality;
-  final String initialVideoPlayer;
 
   @override
   Widget build(BuildContext context) {
@@ -60,7 +56,6 @@ class StreamApp extends StatelessWidget {
             initialBaseUrl: initialBaseUrl,
             initialStreamingEngine: initialStreamingEngine,
             initialDefaultQuality: initialDefaultQuality,
-            initialVideoPlayer: initialVideoPlayer,
           ),
         ),
         ProxyProvider<AppSettings, ApiService>(

@@ -21,9 +21,6 @@ dependencies:
   media_kit_video: ^2.0.1
   media_kit_libs_video: ^1.0.7
 
-  # Player Option B: Modern VLC Stack
-  flutter_vlc_player: ^7.4.0
-
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -32,6 +29,7 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
-# Keep this bypass active to handle the legacy progress bar issues cleanly
+# Keeps the various generations of C++ bindings harmonized on the same layout tools
 dependency_overrides:
   audio_video_progress_bar: ^2.0.1
+  ffi: ^2.2.0

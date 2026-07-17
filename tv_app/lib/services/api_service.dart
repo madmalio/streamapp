@@ -134,11 +134,15 @@ class ApiService {
   }
 
   Future<void> stopStream(String id) async {
-    await http.get(Uri.parse('$baseUrl/streams/stop?id=$id'));
+    try {
+      await http.get(Uri.parse('$baseUrl/streams/stop?id=$id')).timeout(const Duration(seconds: 2));
+    } catch (_) {}
   }
 
   Future<void> stopAllStreams() async {
-    await http.get(Uri.parse('$baseUrl/streams/stop_all'));
+    try {
+      await http.get(Uri.parse('$baseUrl/streams/stop_all')).timeout(const Duration(seconds: 2));
+    } catch (_) {}
   }
 
   Future<double> runSpeedTest() async {

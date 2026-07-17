@@ -122,9 +122,10 @@ class _GuideScreenState extends State<GuideScreen> {
   }
 
   Future<void> _openChannel(Channel channel) async {
+    // If we are opening the currently prewarmed channel, do NOT kill it!
+    // PlayerScreen will adopt the exact same HLS Session ID from the backend.
     _prewarmTimer?.cancel();
-    _prewarmToken += 1;
-    await _releaseActivePrewarm();
+    
     if (!mounted) {
       return;
     }
@@ -133,7 +134,11 @@ class _GuideScreenState extends State<GuideScreen> {
       MaterialPageRoute(
         builder: (_) => PlayerScreen(channel: channel, streamUrl: channel.streamUrl),
       ),
-    );
+    ).then((_) {
+      // Clean up when returning from the player
+      _prewarmToken += 1;
+      _activePrewarmSessionId = null;
+    });
   }
 
   void _openGstTestStream() {

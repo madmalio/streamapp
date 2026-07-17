@@ -751,14 +751,17 @@ func killProcessGracefully(cmd *exec.Cmd, cancel context.CancelFunc) {
 		return
 	}
 
-	// We use an immediate Kill (SIGKILL) here to instantly close all TCP sockets.
-	// This forces the HDHomeRun to release its tuner immediately, rather than
-	// waiting for FFmpeg/GStreamer to slowly flush buffers which causes tuner exhaustion
-	// when the user rapidly switches channels.
-	_ = cmd.Process.Kill()
-	if cancel != nil {
-		cancel()
-	}
+	// Send SIGINT to allow graceful TCP FIN close (avoids HDHomeRun TCP RST bug).
+	_ = cmd.Process.Signal(os.Interrupt)
+
+	// Ensure the context is canceled (triggering SIGKILL) if the process hangs longer than 1s
+	go func(c context.CancelFunc, p *os.Process) {
+		time.Sleep(1000 * time.Millisecond)
+		if c != nil {
+			c()
+		}
+		_ = p.Kill()
+	}(cancel, cmd.Process)
 }
 
 // StartHLSStream starts an HLS transcoding session with a specific bitrate cap.
@@ -1000,6 +1003,7 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 
 	if err := cmd.Start(); err != nil {
 		sess.Cancel()
+		close(sess.Done)
 		writeError(w, http.StatusInternalServerError, "failed to start transcoder")
 		return
 	}
@@ -1084,7 +1088,6 @@ func StopHLSStream(w http.ResponseWriter, r *http.Request) {
 // ShutdownAllStreams cleans up all running HLS sessions.
 func ShutdownAllStreams() {
 	hlsSessionsMu.Lock()
-	defer hlsSessionsMu.Unlock()
 	for id, sess := range hlsSessions {
 		killProcessGracefully(sess.Cmd, sess.Cancel)
 		<-sess.Done
@@ -1093,6 +1096,11 @@ func ShutdownAllStreams() {
 		}(sess.Dir)
 		delete(hlsSessions, id)
 	}
+	hlsSessionsMu.Unlock()
+
+	// Brutal fallback: kill any orphaned ffmpeg or gst-launch-1.0 processes 
+	// that might have leaked from previous crashes to guarantee tuner release.
+	_ = exec.Command("killall", "-9", "ffmpeg", "gst-launch-1.0").Run()
 }
 
 // StopAllStreams kills all running HLS sessions. Useful for freeing up tuners quickly.
