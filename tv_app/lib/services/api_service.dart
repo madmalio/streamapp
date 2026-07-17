@@ -67,7 +67,7 @@ class ApiService {
     }
   }
 
-  Future<String> getStreamUrl(String rawUrl, {String bitrate = 'Original'}) async {
+  Future<String> getStreamUrl(String rawUrl, {String bitrate = 'Original', String? engine}) async {
     if (bitrate == 'Original') {
       // Fetch the raw stream URL
       final response = await http.get(Uri.parse('$baseUrl/streams/play?url=${Uri.encodeComponent(rawUrl)}'));
@@ -78,7 +78,7 @@ class ApiService {
         throw Exception('Failed to get raw stream url');
       }
     } else {
-      final session = await startHlsStream(rawUrl, bitrate: bitrate);
+      final session = await startHlsStream(rawUrl, bitrate: bitrate, engine: engine);
       return session.url;
     }
   }
@@ -89,13 +89,15 @@ class ApiService {
     bool fast = false,
     bool prewarm = false,
     bool transmux = false,
+    String? engine,
   }) async {
     final fastParam = fast ? '&fast=1' : '';
     final prewarmParam = prewarm ? '&prewarm=1' : '';
     final transmuxParam = transmux ? '&transmux=1' : '';
+    final engineParam = engine != null && engine.isNotEmpty ? '&engine=${Uri.encodeComponent(engine)}' : '';
     final response = await http.get(
       Uri.parse(
-        '$baseUrl/streams/start?url=${Uri.encodeComponent(rawUrl)}&bitrate=${Uri.encodeComponent(bitrate)}$fastParam$prewarmParam$transmuxParam',
+        '$baseUrl/streams/start?url=${Uri.encodeComponent(rawUrl)}&bitrate=${Uri.encodeComponent(bitrate)}$fastParam$prewarmParam$transmuxParam$engineParam',
       ),
     ).timeout(const Duration(seconds: 35));
 
@@ -121,10 +123,10 @@ class ApiService {
     return HlsStreamSession(url: absoluteUrl, sessionId: sessionId);
   }
 
-  Future<HlsStreamSession?> prewarmHlsStream(String rawUrl, {String? bitrate}) async {
+  Future<HlsStreamSession?> prewarmHlsStream(String rawUrl, {String? bitrate, String? engine}) async {
     try {
       final targetBitrate = bitrate ?? await getRecommendedBitrate(forceRefresh: false, fallbackOnUnknown: true);
-      return await startHlsStream(rawUrl, bitrate: targetBitrate, fast: true, prewarm: true);
+      return await startHlsStream(rawUrl, bitrate: targetBitrate, fast: true, prewarm: true, engine: engine);
     } catch (_) {
       // Best-effort prewarm: do not surface failures to UI.
       return null;

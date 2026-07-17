@@ -16,6 +16,7 @@ class GuideScreen extends StatefulWidget {
 
 class _GuideScreenState extends State<GuideScreen> {
   static const bool _prewarmEnabled = false;
+  static const String _gstTestUrl = 'http://192.168.4.143:8090/stream.m3u8';
 
   List<Channel> _channels = [];
   bool _isLoading = true;
@@ -135,6 +136,21 @@ class _GuideScreenState extends State<GuideScreen> {
     );
   }
 
+  void _openGstTestStream() {
+    final testChannel = Channel(
+      id: 'gst-test',
+      name: 'GStreamer Test',
+      streamUrl: _gstTestUrl,
+      isFavorite: false,
+    );
+
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PlayerScreen(channel: testChannel, streamUrl: _gstTestUrl),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _prewarmTimer?.cancel();
@@ -183,13 +199,24 @@ class _GuideScreenState extends State<GuideScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          'Live Guide',
-                          style: TextStyle(
-                            fontSize: 36,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.white,
-                          ),
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text(
+                                'Live Guide',
+                                style: TextStyle(
+                                  fontSize: 36,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                            ElevatedButton.icon(
+                              onPressed: _openGstTestStream,
+                              icon: const Icon(Icons.science),
+                              label: const Text('GStreamer Test'),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 30),
                         Expanded(

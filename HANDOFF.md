@@ -1,20 +1,51 @@
 # StreamApp Handoff
 
 ## Current State
-- The user is building `streamapp`, a Flutter TV app (`tv_app`) and a Go backend (`backend`) to stream Live TV from an HDHomeRun tuner on their local network.
-- The user intends to use this app remotely via Tailscale, which requires the Go backend to transcode the HDHomeRun's raw 1080i MPEG-2 TS stream into lower bitrates (e.g., 1.5 Mbps, 3 Mbps, etc.) using HLS.
-- The UI includes a Quality selector (Gear icon) that successfully changes bitrates by making API calls to the Go backend.
+- The user is building `streamapp`, a Flutter TV app (`tv_app`) and a Go backend (`backend`) for HDHomeRun live TV.
+- Backend and app were heavily updated during this session. Current code now supports:
+  - FFmpeg VAAPI transcode path (HLS fMP4 by default)
+  - Fast-start query mode (`fast=1`)
+  - Prewarm session classification (`prewarm=1`) with shorter timeout
+  - Transmux test mode (`transmux=1`)
+  - App-side `Original HLS` quality option (transmux test lane)
+- API base URL is configurable in app settings and persisted in SharedPreferences.
 
-## The Problem
-- The user is experiencing **severe, persistent buffering** when watching transcoded streams (e.g., at 1.5 Mbps). The player consumes the video faster than the Go backend can encode it.
-- FFmpeg transcoder speed constantly drops below 1.0x (usually ~0.85x to ~0.95x).
+## Important Environment / Ops Notes
+- Home server target IP in session: `192.168.4.143`.
+- HDHomeRun source used most in testing: `http://192.168.4.22:5004/auto/v7.1` (also `v13.1` and others).
+- Backend runtime envs commonly used:
+  - `FFMPEG_VAAPI_DEVICE=/dev/dri/renderD128`
+  - `FFMPEG_HLS_START_TIMEOUT_SECONDS=90`
+  - `FFMPEG_HLS_SESSION_TIMEOUT_SECONDS=300`
+  - `FFMPEG_HLS_PREWARM_TIMEOUT_SECONDS=30`
+- Immediate tuner release command when stuck:
+  - `curl -s "http://127.0.0.1:8080/api/streams/stop_all"`
 
-## What Has Been Tested
-- **Hardware Acceleration:** Attempted to use NVIDIA hardware decoding (`-hwaccel cuda`, `-c:v mpeg2_cuvid`, `-hwaccel nvdec`) and NVENC encoding (`-c:v h264_nvenc`) on the user's RTX 3060.
-- **Probe Size:** The dirty nature of live ATSC 1.0 antenna streams causes FFmpeg's stream probing to fail if `probesize` is too small (e.g., 5MB). When probing fails, FFmpeg aborts the hardware decoder initialization and falls back to `native` CPU decoding, which bottlenecks the pipeline and causes buffering. 
-- **Frame Duplication:** When the antenna drops packets, FFmpeg's default Constant Frame Rate (CFR) logic (`-fps_mode cfr`) duplicates thousands of frames to fill timestamp gaps, which cripples transcode speed. Removing `-fps_mode cfr` slightly improved things but didn't completely solve it because the HLS muxer implicitly prefers a constant frame rate.
+## What Was Proven
+- VAAPI FFmpeg transcode is functional and can run >1.0x on tested channels.
+- fMP4 HLS looked good in quality tests.
+- GStreamer is installed on server and can produce HLS output.
+- A working GStreamer baseline pipeline was found with relatively good startup:
+  - `souphttpsrc` + `decodebin`
+  - `videoconvert ! video/x-raw,format=NV12 ! vaapih264enc bitrate=4500 keyframe-period=60`
+  - `hlssink2 target-duration=4 playlist-length=6 max-files=20`
 
-## Next Steps
-1. **Analyze Jellyfin:** The user noted that Jellyfin effortlessly streams this same hardware without buffering. The next agent should analyze exactly what FFmpeg arguments Jellyfin uses for Live TV HLS transcoding.
-2. **Rebuild FFmpeg Pipeline:** Rip out the current FFmpeg command in `backend/internal/handlers/handlers.go` and replace it with a highly resilient pipeline tailored specifically for lossy Live TV TS streams.
-3. **Avoid Deinterlacing Bottlenecks:** Avoid CPU-bound deinterlacing (`yadif`) which severely slows down the pipeline when combined with CPU decoding.
+## Current Problem (End of Session)
+- User still sees startup/sustained buffering in app under some paths.
+- Prewarm experiments caused tuner contention and stuck tuners; client prewarm was disabled in guide screen for stability.
+- GStreamer experiments showed promising startup but inconsistent long-run behavior and occasional artifacts depending on pipeline variant.
+- User explicitly wants to continue evaluating GStreamer and compare it against FFmpeg in app context.
+
+## User Preference / Direction for Next Chat
+- The user wants to continue with **GStreamer exploration**, not default back to FFmpeg-only discussions.
+- Keep the process simple and avoid overcomplicated steps.
+- Prioritize practical in-app comparison and reproducible test flows.
+
+## Next Steps (Recommended)
+1. Validate one stable GStreamer pipeline and freeze it as baseline (no further speculative variants until measured).
+2. Add a clean app toggle/path for FFmpeg vs GStreamer stream source so A/B testing is one click.
+3. Measure and compare:
+   - time-to-first-frame
+   - 5-minute buffering behavior
+   - tuner lock/release behavior
+4. Only then decide whether to keep FFmpeg, move to GStreamer, or run hybrid.

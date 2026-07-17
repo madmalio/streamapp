@@ -7,24 +7,31 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/channel.dart';
 import '../services/api_service.dart';
+import '../services/app_settings.dart';
 
 class PlayerScreen extends StatefulWidget {
   final Channel channel;
   final String streamUrl;
 
-  const PlayerScreen({super.key, required this.channel, required this.streamUrl});
+  const PlayerScreen({
+    super.key,
+    required this.channel,
+    required this.streamUrl,
+  });
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
 class _PlayerScreenState extends State<PlayerScreen> {
-  late Player player;
-  late VideoController controller;
+  Player? player;
+  VideoController? controller;
+
   String _currentBitrate = 'Original';
   String? _activeHlsSessionId;
   int _switchToken = 0;
   StreamSubscription<double>? _volumeSubscription;
+  String _currentEngine = 'ffmpeg';
 
   final List<String> _qualityOptions = [
     'Auto',
@@ -39,26 +46,26 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    final settings = context.read<AppSettings>();
+    _currentEngine = settings.streamingEngine;
     _bootstrapPlayback();
   }
 
   Future<void> _bootstrapPlayback() async {
     await _initPlayer();
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
 
-    // If the channel URL is already HLS (e.g. external GStreamer test stream),
-    // play it directly and skip backend transcoder startup.
     if (widget.streamUrl.contains('.m3u8')) {
       setState(() => _currentBitrate = 'Original');
       await _openAndForcePlay(widget.streamUrl);
       return;
     }
 
-    // Start directly in Auto using the app-level cached recommendation.
+    final settings = context.read<AppSettings>();
+    final defaultQuality = settings.defaultQuality;
+
     await _changeQuality(
-      'Auto',
+      defaultQuality,
       fallbackOnUnknownAuto: true,
       refreshAutoRecommendation: false,
       preferFastSwitch: true,
@@ -66,36 +73,58 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _openAndForcePlay(String url) async {
-    await player.open(Media(url), play: true);
-    await player.play();
+    if (player == null) return;
 
-    // Some devices occasionally pause right after source changes.
-    unawaited(Future<void>.delayed(const Duration(milliseconds: 350), () async {
-      if (mounted && !player.state.playing) {
-        await player.play();
-      }
-    }));
-    unawaited(Future<void>.delayed(const Duration(milliseconds: 900), () async {
-      if (mounted && !player.state.playing) {
-        await player.play();
-      }
-    }));
+    await player!.open(Media(url), play: true);
+    await player!.play();
+
+    // Catch potential platform pauses directly after stream initialization shifts
+    unawaited(
+      Future<void>.delayed(const Duration(milliseconds: 350), () async {
+        if (mounted && player != null && !player!.state.playing) {
+          await player!.play();
+        }
+      }),
+    );
+    unawaited(
+      Future<void>.delayed(const Duration(milliseconds: 900), () async {
+        if (mounted && player != null && !player!.state.playing) {
+          await player!.play();
+        }
+      }),
+    );
   }
 
   Future<void> _initPlayer() async {
-    player = Player();
-    controller = VideoController(player);
-
-    // Load saved volume
     final prefs = await SharedPreferences.getInstance();
     final savedVolume = prefs.getDouble('player_volume') ?? 100.0;
-    await player.setVolume(savedVolume);
 
-    // Listen to volume changes and save them
-    _volumeSubscription = player.stream.volume.listen((volume) {
+    player = Player();
+    controller = VideoController(player!);
+
+    await _configureNativeLowLatencyProfile();
+    await player!.setVolume(savedVolume);
+
+    _volumeSubscription = player!.stream.volume.listen((volume) {
       prefs.setDouble('player_volume', volume);
     });
+  }
 
+  Future<void> _configureNativeLowLatencyProfile() async {
+    try {
+      if (player?.platform is! NativePlayer) return;
+      final nativePlayer = player!.platform as NativePlayer;
+
+      // Force libmpv down into a live real-time state mirroring standalone VLC configurations
+      await nativePlayer.setProperty('profile', 'low-latency');
+      await nativePlayer.setProperty('cache', 'no');
+      await nativePlayer.setProperty('video-sync', 'audio');
+      await nativePlayer.setProperty('untimed', 'yes');
+      await nativePlayer.setProperty('hwdec', 'auto');
+      await nativePlayer.setProperty('network-timeout', '5');
+    } catch (e) {
+      debugPrint('Low-latency profile parameters not applied: $e');
+    }
   }
 
   Future<void> _changeQuality(
@@ -104,18 +133,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
     bool refreshAutoRecommendation = false,
     bool preferFastSwitch = false,
   }) async {
-    if (bitrate == _currentBitrate && player.state.playing) return;
+    final isPlaying = player?.state.playing ?? false;
+    if (bitrate == _currentBitrate && isPlaying) return;
 
     final requestToken = ++_switchToken;
-
-    setState(() {
-      _currentBitrate = bitrate;
-    });
+    setState(() => _currentBitrate = bitrate);
 
     String? pendingSessionId;
 
     try {
       final api = Provider.of<ApiService>(context, listen: false);
+      final oldSessionId = _activeHlsSessionId;
+
+      if (oldSessionId != null) {
+        _activeHlsSessionId = null;
+        await api.stopStream(oldSessionId);
+        await Future<void>.delayed(const Duration(milliseconds: 350));
+      }
 
       String targetBitrate = bitrate;
       if (bitrate == 'Auto') {
@@ -123,20 +157,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
           forceRefresh: refreshAutoRecommendation,
           fallbackOnUnknown: fallbackOnUnknownAuto,
         );
-        debugPrint('Auto Selected Bitrate: $targetBitrate');
-
-        if (targetBitrate == _currentBitrate) {
-          return;
-        }
-        if (!mounted || requestToken != _switchToken) {
-          return;
-        }
+        if (targetBitrate == _currentBitrate) return;
+        if (!mounted || requestToken != _switchToken) return;
         setState(() => _currentBitrate = targetBitrate);
       }
 
       if (targetBitrate == 'Original') {
         await _openAndForcePlay(widget.streamUrl);
-
         final oldSessionId = _activeHlsSessionId;
         _activeHlsSessionId = null;
         if (oldSessionId != null) {
@@ -151,6 +178,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           bitrate: 'Original',
           fast: preferFastSwitch,
           transmux: true,
+          engine: _currentEngine,
         );
         pendingSessionId = session.sessionId;
         if (!mounted || requestToken != _switchToken) {
@@ -163,7 +191,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
         _activeHlsSessionId = session.sessionId;
         pendingSessionId = null;
 
-        if (previousSessionId != null && previousSessionId != session.sessionId) {
+        if (previousSessionId != null &&
+            previousSessionId != session.sessionId) {
           unawaited(api.stopStream(previousSessionId));
         }
         return;
@@ -175,26 +204,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
           widget.channel.streamUrl,
           bitrate: targetBitrate,
           fast: preferFastSwitch,
+          engine: _currentEngine,
         );
       } catch (_) {
         try {
-          // Fast profile failed, retry with stable startup settings.
           session = await api.startHlsStream(
             widget.channel.streamUrl,
             bitrate: targetBitrate,
             fast: false,
+            engine: _currentEngine,
           );
         } catch (_) {
-          // If tuner allocation is stuck (e.g. HDHomeRun 503), clear stale sessions once and retry.
           await api.stopAllStreams();
           await Future<void>.delayed(const Duration(milliseconds: 350));
           session = await api.startHlsStream(
             widget.channel.streamUrl,
             bitrate: targetBitrate,
             fast: false,
+            engine: _currentEngine,
           );
         }
       }
+
       pendingSessionId = session.sessionId;
       if (!mounted || requestToken != _switchToken) {
         unawaited(api.stopStream(session.sessionId));
@@ -202,9 +233,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
 
       final previousSessionId = _activeHlsSessionId;
-
       await _openAndForcePlay(session.url);
-
       _activeHlsSessionId = session.sessionId;
       pendingSessionId = null;
 
@@ -212,10 +241,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         unawaited(api.stopStream(previousSessionId));
       }
     } catch (e) {
-      if (!mounted) {
-        return;
-      }
-
+      if (!mounted) return;
       try {
         final api = Provider.of<ApiService>(context, listen: false);
         if (pendingSessionId != null) {
@@ -223,10 +249,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
         }
       } catch (_) {}
 
-      if (mounted && !player.state.playing) {
+      final isPlaying = player?.state.playing ?? false;
+      if (mounted && !isPlaying) {
         await _openAndForcePlay(widget.streamUrl);
       }
     }
+  }
+
+  Future<void> _toggleEngine() async {
+    final newEngine = _currentEngine == 'ffmpeg' ? 'gstreamer' : 'ffmpeg';
+    setState(() => _currentEngine = newEngine);
+
+    if (_currentBitrate == 'Original' && widget.streamUrl.contains('.m3u8')) {
+      return;
+    }
+
+    await _changeQuality(
+      _currentBitrate,
+      fallbackOnUnknownAuto: true,
+      refreshAutoRecommendation: false,
+      preferFastSwitch: true,
+    );
   }
 
   Future<void> _onQualitySelected(String bitrate) async {
@@ -236,7 +279,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void dispose() {
     _volumeSubscription?.cancel();
-
     try {
       final api = Provider.of<ApiService>(context, listen: false);
       final sessionId = _activeHlsSessionId;
@@ -245,7 +287,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       }
     } catch (_) {}
 
-    player.dispose();
+    player?.dispose();
     super.dispose();
   }
 
@@ -256,8 +298,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       body: Focus(
         autofocus: true,
         onKeyEvent: (node, event) {
-          if (event is KeyDownEvent && 
-              (event.logicalKey == LogicalKeyboardKey.escape || event.logicalKey == LogicalKeyboardKey.browserBack)) {
+          if (event is KeyDownEvent &&
+              (event.logicalKey == LogicalKeyboardKey.escape ||
+                  event.logicalKey == LogicalKeyboardKey.browserBack)) {
             Navigator.pop(context);
             return KeyEventResult.handled;
           }
@@ -285,7 +328,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     const MaterialDesktopFullscreenButton(),
                   ],
                 ),
-                child: Video(controller: controller),
+                child: controller != null
+                    ? Video(controller: controller!)
+                    : const SizedBox(),
               ),
             ),
             // Channel Info Overlay
@@ -293,7 +338,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
               top: 40,
               left: 40,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.black.withOpacity(0.7),
                   borderRadius: BorderRadius.circular(8),
@@ -311,41 +359,81 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     ),
                     Text(
                       'Quality: $_currentBitrate',
-                      style: const TextStyle(
-                        color: Colors.grey,
-                        fontSize: 16,
-                      ),
+                      style: const TextStyle(color: Colors.grey, fontSize: 16),
                     ),
                   ],
                 ),
               ),
             ),
-            // Quality Selector Overlay (Top Right)
+            // Quality & Engine Selector Overlay (Top Right)
             Positioned(
               top: 40,
               right: 40,
-              child: PopupMenuButton<String>(
-                icon: const Icon(Icons.settings, color: Colors.white, size: 32),
-                color: Colors.black87,
-                tooltip: 'Quality',
-                onSelected: _onQualitySelected,
-                itemBuilder: (context) => _qualityOptions.map((value) {
-                  String text = value == 'Original' ? 'Original (Direct)' : '${value.replaceAll('M', '')} Mbps';
-                  if (value == 'Auto') {
-                    text = 'Auto';
-                  } else if (value == 'Original HLS') {
-                    text = 'Original (HLS)';
-                  }
-                  return PopupMenuItem(
-                    value: value,
-                    child: Text(
-                      text,
-                      style: TextStyle(
-                        color: _currentBitrate == value ? Colors.blue : Colors.white,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton.icon(
+                    onPressed: _toggleEngine,
+                    icon: Icon(
+                      _currentEngine == 'gstreamer'
+                          ? Icons.science
+                          : Icons.videocam,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                    label: Text(
+                      _currentEngine == 'gstreamer' ? 'GStreamer' : 'FFmpeg',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                  );
-                }).toList(),
+                    style: TextButton.styleFrom(
+                      backgroundColor: Colors.black54,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                        side: const BorderSide(color: Colors.white30),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  PopupMenuButton<String>(
+                    icon: const Icon(
+                      Icons.settings,
+                      color: Colors.white,
+                      size: 32,
+                    ),
+                    color: Colors.black87,
+                    tooltip: 'Quality',
+                    onSelected: _onQualitySelected,
+                    itemBuilder: (context) => _qualityOptions.map((value) {
+                      String text = value == 'Original'
+                          ? 'Original (Direct)'
+                          : '${value.replaceAll('M', '')} Mbps';
+                      if (value == 'Auto') {
+                        text = 'Auto';
+                      } else if (value == 'Original HLS') {
+                        text = 'Original (HLS)';
+                      }
+                      return PopupMenuItem(
+                        value: value,
+                        child: Text(
+                          text,
+                          style: TextStyle(
+                            color: _currentBitrate == value
+                                ? Colors.blue
+                                : Colors.white,
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ],
               ),
             ),
           ],

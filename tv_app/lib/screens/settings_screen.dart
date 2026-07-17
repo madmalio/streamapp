@@ -13,12 +13,18 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _controller;
   bool _isSaving = false;
+  String _selectedEngine = 'ffmpeg';
+  String _selectedQuality = 'Auto';
+  String _selectedPlayer = 'media_kit';
 
   @override
   void initState() {
     super.initState();
     final settings = context.read<AppSettings>();
     _controller = TextEditingController(text: settings.baseUrl);
+    _selectedEngine = settings.streamingEngine;
+    _selectedQuality = settings.defaultQuality;
+    _selectedPlayer = settings.videoPlayer;
   }
 
   @override
@@ -41,7 +47,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
 
     setState(() => _isSaving = true);
-    await context.read<AppSettings>().setBaseUrl(input);
+    final settings = context.read<AppSettings>();
+    await settings.setBaseUrl(input);
+    await settings.setStreamingEngine(_selectedEngine);
+    await settings.setDefaultQuality(_selectedQuality);
+    await settings.setVideoPlayer(_selectedPlayer);
     if (!mounted) {
       return;
     }
@@ -83,7 +93,114 @@ class _SettingsScreenState extends State<SettingsScreen> {
               'Tip: include /api at the end.',
               style: TextStyle(color: Colors.white60),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 24),
+            const Text(
+              'Default Transcoding Engine',
+              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1A1A),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: _selectedEngine,
+                  dropdownColor: const Color(0xFF1A1A1A),
+                  style: const TextStyle(color: Colors.white, fontSize: 16),
+                  icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
+                  isExpanded: true,
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'ffmpeg',
+                      child: Text('FFmpeg (Resilient VAAPI)'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'gstreamer',
+                      child: Text('GStreamer (Low Latency)'),
+                    ),
+                  ],
+                  onChanged: (val) {
+                    if (val != null) {
+                      setState(() => _selectedEngine = val);
+                    }
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Default Playback Quality',
+              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1A1A),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: _selectedQuality,
+                  dropdownColor: const Color(0xFF1A1A1A),
+                  style: const TextStyle(color: Colors.white, fontSize: 16),
+                  icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
+                  isExpanded: true,
+                  items: const [
+                    DropdownMenuItem(value: 'Auto', child: Text('Auto (Network Recommended)')),
+                    DropdownMenuItem(value: 'Original', child: Text('Original (Direct Playback)')),
+                    DropdownMenuItem(value: 'Original HLS', child: Text('Original (HLS Transmux)')),
+                    DropdownMenuItem(value: '8M', child: Text('8 Mbps HLS Transcode')),
+                    DropdownMenuItem(value: '4M', child: Text('4 Mbps HLS Transcode')),
+                    DropdownMenuItem(value: '3M', child: Text('3 Mbps HLS Transcode')),
+                    DropdownMenuItem(value: '1.5M', child: Text('1.5 Mbps HLS Transcode')),
+                  ],
+                  onChanged: (val) {
+                    if (val != null) {
+                      setState(() => _selectedQuality = val);
+                    }
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Video Player Backend',
+              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1A1A1A),
+                borderRadius: BorderRadius.circular(4),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: _selectedPlayer,
+                  dropdownColor: const Color(0xFF1A1A1A),
+                  style: const TextStyle(color: Colors.white, fontSize: 16),
+                  icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
+                  isExpanded: true,
+                  items: const [
+                    DropdownMenuItem(value: 'media_kit', child: Text('MediaKit (Hardware Accelerated)')),
+                    DropdownMenuItem(value: 'vlc', child: Text('VLC (Robust Networking)')),
+                  ],
+                  onChanged: (val) {
+                    if (val != null) {
+                      setState(() => _selectedPlayer = val);
+                    }
+                  },
+                ),
+              ),
+            ),
+            const SizedBox(height: 30),
             ElevatedButton(
               onPressed: _isSaving ? null : _save,
               child: _isSaving

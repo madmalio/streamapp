@@ -11,7 +11,11 @@ import 'package:tv_app/main.dart';
 
 void main() {
   testWidgets('Guide screen renders', (WidgetTester tester) async {
-    await tester.pumpWidget(const StreamApp(initialBaseUrl: 'http://localhost:8080/api'));
+    await tester.pumpWidget(const StreamApp(
+      initialBaseUrl: 'http://localhost:8080/api',
+      initialStreamingEngine: 'ffmpeg',
+      initialDefaultQuality: 'Auto',
+    ));
     await tester.pumpAndSettle();
 
     expect(find.text('Live Guide'), findsOneWidget);

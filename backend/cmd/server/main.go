@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -91,8 +95,43 @@ func main() {
 		port = "8080"
 	}
 
-	log.Printf("🚀 Server booting up cleanly on port %s...", port)
-	if err := http.ListenAndServe(":"+port, r); err != nil {
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: r,
+	}
+
+	// Channel to listen for errors coming from the listener.
+	serverErrors := make(chan error, 1)
+
+	// Start the server
+	go func() {
+		log.Printf("🚀 Server booting up cleanly on port %s...", port)
+		serverErrors <- srv.ListenAndServe()
+	}()
+
+	// Channel to listen for an interrupt or terminate signal from the OS.
+	osSignals := make(chan os.Signal, 1)
+	signal.Notify(osSignals, os.Interrupt, syscall.SIGTERM)
+
+	// Block until a signal is received or an error occurs
+	select {
+	case err := <-serverErrors:
 		log.Fatalf("Server crash detected: %v", err)
+
+	case sig := <-osSignals:
+		log.Printf("Shutdown signal received: %v", sig)
+
+		// Ask the server to cleanly shut down
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Printf("Graceful shutdown did not complete in 5s: %v", err)
+		}
+
+		// Ensure all transcoding processes are killed so tuners are released
+		log.Printf("Killing all active streams...")
+		handlers.ShutdownAllStreams()
+		log.Printf("Cleanup complete, exiting.")
 	}
 }

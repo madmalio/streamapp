@@ -8,6 +8,8 @@ import 'services/app_settings.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize Media Kit natively for the Windows desktop engine
   MediaKit.ensureInitialized();
 
   const defaultApiBaseUrl = String.fromEnvironment(
@@ -16,22 +18,50 @@ Future<void> main() async {
   );
 
   final prefs = await SharedPreferences.getInstance();
-  final initialBaseUrl = prefs.getString(AppSettings.apiBaseUrlKey) ?? defaultApiBaseUrl;
+  final initialBaseUrl =
+      prefs.getString(AppSettings.apiBaseUrlKey) ?? defaultApiBaseUrl;
+  final initialStreamingEngine =
+      prefs.getString(AppSettings.streamingEngineKey) ?? 'ffmpeg';
+  final initialDefaultQuality =
+      prefs.getString(AppSettings.defaultQualityKey) ?? 'Auto';
+  final initialVideoPlayer =
+      prefs.getString(AppSettings.videoPlayerKey) ?? 'media_kit';
 
-  runApp(StreamApp(initialBaseUrl: initialBaseUrl));
+  runApp(
+    StreamApp(
+      initialBaseUrl: initialBaseUrl,
+      initialStreamingEngine: initialStreamingEngine,
+      initialDefaultQuality: initialDefaultQuality,
+      initialVideoPlayer: initialVideoPlayer,
+    ),
+  );
 }
 
 class StreamApp extends StatelessWidget {
-  const StreamApp({super.key, required this.initialBaseUrl});
+  const StreamApp({
+    super.key,
+    required this.initialBaseUrl,
+    required this.initialStreamingEngine,
+    required this.initialDefaultQuality,
+    required this.initialVideoPlayer,
+  });
 
   final String initialBaseUrl;
+  final String initialStreamingEngine;
+  final String initialDefaultQuality;
+  final String initialVideoPlayer;
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(
-          create: (_) => AppSettings(initialBaseUrl: initialBaseUrl),
+          create: (_) => AppSettings(
+            initialBaseUrl: initialBaseUrl,
+            initialStreamingEngine: initialStreamingEngine,
+            initialDefaultQuality: initialDefaultQuality,
+            initialVideoPlayer: initialVideoPlayer,
+          ),
         ),
         ProxyProvider<AppSettings, ApiService>(
           update: (_, settings, previous) {
@@ -45,6 +75,7 @@ class StreamApp extends StatelessWidget {
       child: MaterialApp(
         title: 'StreamApp TV',
         theme: ThemeData(
+          useMaterial3: true,
           brightness: Brightness.dark,
           primaryColor: Colors.blueAccent,
           scaffoldBackgroundColor: const Color(0xFF0D0D0D),

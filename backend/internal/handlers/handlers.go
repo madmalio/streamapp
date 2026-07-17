@@ -46,6 +46,7 @@ type HLSSession struct {
 	Cmd          *exec.Cmd
 	Cancel       context.CancelFunc
 	IsPrewarm    bool
+	Done         chan struct{}
 }
 
 var (
@@ -84,7 +85,7 @@ func init() {
 
 				if now.Sub(sess.LastAccessed) > timeout {
 					fmt.Printf("[HLS Manager] Session %s timed out, cleaning up...\n", id)
-					sess.Cancel()
+					killProcessGracefully(sess.Cmd, sess.Cancel)
 					go func(dir string) {
 						time.Sleep(2 * time.Second)
 						os.RemoveAll(dir)
@@ -742,6 +743,24 @@ func PlayStream(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func killProcessGracefully(cmd *exec.Cmd, cancel context.CancelFunc) {
+	if cmd == nil || cmd.Process == nil {
+		if cancel != nil {
+			cancel()
+		}
+		return
+	}
+
+	// We use an immediate Kill (SIGKILL) here to instantly close all TCP sockets.
+	// This forces the HDHomeRun to release its tuner immediately, rather than
+	// waiting for FFmpeg/GStreamer to slowly flush buffers which causes tuner exhaustion
+	// when the user rapidly switches channels.
+	_ = cmd.Process.Kill()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // StartHLSStream starts an HLS transcoding session with a specific bitrate cap.
 func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	streamURL := r.URL.Query().Get("url")
@@ -761,9 +780,13 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 		strings.EqualFold(r.URL.Query().Get("prewarm"), "true")
 	transmux := strings.EqualFold(r.URL.Query().Get("transmux"), "1") ||
 		strings.EqualFold(r.URL.Query().Get("transmux"), "true")
+	engine := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("engine")))
+	if engine == "" {
+		engine = "ffmpeg"
+	}
 
-	// Create unique ID based on URL and bitrate
-	hashInput := fmt.Sprintf("%s-%s-%t", streamURL, bitrate, transmux)
+	// Create unique ID based on URL, bitrate, transmux, and engine to prevent collisions
+	hashInput := fmt.Sprintf("%s-%s-%t-%s", streamURL, bitrate, transmux, engine)
 	hash := sha256.Sum256([]byte(hashInput))
 	id := hex.EncodeToString(hash[:])[:16]
 
@@ -792,13 +815,14 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 		LastAccessed: time.Now(),
 		Cancel:       cancel,
 		IsPrewarm:    prewarm,
+		Done:         make(chan struct{}),
 	}
 	hlsSessions[id] = sess
 	hlsSessionsMu.Unlock()
 
 	playlistPath := filepath.ToSlash(filepath.Join(tempDir, "stream.m3u8"))
 	segmentExt := ".m4s"
-	if transmux {
+	if transmux || engine == "gstreamer" || fastSwitch {
 		segmentExt = ".ts"
 	}
 	segmentPath := filepath.ToSlash(filepath.Join(tempDir, "segment_%05d"+segmentExt))
@@ -815,14 +839,63 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	hlsTime := "2"
 	hlsListSize := "8"
 	if fastSwitch {
-		probeSize = "6M"
-		analyzeDuration = "6M"
+		probeSize = "500k"
+		analyzeDuration = "500k"
 		hlsTime = "1"
 		hlsListSize = "4"
 	}
 
+	binaryName := "ffmpeg"
 	var args []string
-	if transmux {
+
+	if engine == "gstreamer" {
+		binaryName = "gst-launch-1.0"
+		gstTime := "4"
+		gstListSize := "6"
+		gstQueueBuffers := "40"
+		if fastSwitch {
+			gstTime = "1"
+			gstListSize = "4"
+			gstQueueBuffers = "15"
+		}
+
+		// Convert bitrate (e.g. "4M" or "1.5M") to kbps for GStreamer's vaapih264enc (e.g. "4000" or "1500")
+		gstBitrate := "4500" // Default fallback
+		trimmedBitrate := strings.TrimSpace(strings.ToUpper(bitrate))
+		if strings.HasSuffix(trimmedBitrate, "M") {
+			numStr := strings.TrimSuffix(trimmedBitrate, "M")
+			if val, err := strconv.ParseFloat(numStr, 64); err == nil {
+				gstBitrate = strconv.Itoa(int(val * 1000))
+			}
+		} else if strings.HasSuffix(trimmedBitrate, "K") {
+			numStr := strings.TrimSuffix(trimmedBitrate, "K")
+			if val, err := strconv.ParseFloat(numStr, 64); err == nil {
+				gstBitrate = strconv.Itoa(int(val))
+			}
+		} else if val, err := strconv.Atoi(trimmedBitrate); err == nil && val > 0 {
+			if val < 10000 {
+				gstBitrate = strconv.Itoa(val)
+			} else {
+				gstBitrate = strconv.Itoa(val / 1000)
+			}
+		}
+
+		defaultGstPipeline := `-e souphttpsrc location={url} is-live=true do-timestamp=true keep-alive=true blocksize=16384 ! decodebin name=dec dec. ! queue max-size-buffers={queue_buffers} max-size-time=0 max-size-bytes=0 ! videoconvert ! video/x-raw,format=NV12 ! vaapih264enc bitrate={bitrate} keyframe-period=60 rate-control=vbr quality-level=5 ! h264parse config-interval=1 ! queue max-size-buffers={queue_buffers} ! hls.video dec. ! queue max-size-buffers={queue_buffers} max-size-time=0 max-size-bytes=0 ! audioconvert ! audioresample ! volume volume=1.8 ! voaacenc bitrate=128000 ! aacparse ! queue max-size-buffers={queue_buffers} ! hls.audio hlssink2 name=hls playlist-location={playlist} location={segment} target-duration={time} playlist-length={list_size} max-files=20`
+		pipelineStr := os.Getenv("GSTREAMER_PIPELINE")
+		if pipelineStr == "" {
+			pipelineStr = defaultGstPipeline
+		}
+
+		pipelineStr = strings.ReplaceAll(pipelineStr, "{url}", streamURL)
+		pipelineStr = strings.ReplaceAll(pipelineStr, "{bitrate}", gstBitrate)
+		pipelineStr = strings.ReplaceAll(pipelineStr, "{time}", gstTime)
+		pipelineStr = strings.ReplaceAll(pipelineStr, "{list_size}", gstListSize)
+		pipelineStr = strings.ReplaceAll(pipelineStr, "{queue_buffers}", gstQueueBuffers)
+		pipelineStr = strings.ReplaceAll(pipelineStr, "{segment}", segmentPath)
+		pipelineStr = strings.ReplaceAll(pipelineStr, "{playlist}", playlistPath)
+
+		args = strings.Fields(pipelineStr)
+	} else if transmux {
 		// Transmux mode: copy source codecs into HLS-TS segments (no re-encode).
 		args = []string{
 			"-fflags", "+genpts",
@@ -844,6 +917,11 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// Resilient Intel VAAPI hardware pipeline for dirty OTA MPEG-TS feeds.
+		gopSize := "60"
+		if fastSwitch {
+			gopSize = "30"
+		}
+
 		args = []string{
 			"-vaapi_device", vaapiDevice,
 			"-fflags", "+genpts",
@@ -861,8 +939,8 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 			"-maxrate", bitrate,
 			"-bufsize", bufsize,
 			"-bf", "0",
-			"-g", "60",
-			"-keyint_min", "60",
+			"-g", gopSize,
+			"-keyint_min", gopSize,
 			"-fps_mode", "passthrough",
 			"-af", "aresample=async=1",
 			"-c:a", "aac",
@@ -872,16 +950,33 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 			"-f", "hls",
 			"-hls_time", hlsTime,
 			"-hls_list_size", hlsListSize,
-			"-hls_flags", "delete_segments+append_list+independent_segments+omit_endlist",
-			"-hls_segment_type", "fmp4",
-			"-hls_fmp4_init_filename", "init.mp4",
+		}
+
+		if fastSwitch {
+			args = append(args, "-hls_flags", "delete_segments+append_list+omit_endlist")
+		} else {
+			args = append(args,
+				"-hls_flags", "delete_segments+append_list+independent_segments+omit_endlist",
+				"-hls_segment_type", "fmp4",
+				"-hls_fmp4_init_filename", "init.mp4",
+			)
+		}
+
+		args = append(args,
 			"-hls_segment_filename", segmentPath,
 			playlistPath,
-		}
+		)
 	}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd := exec.CommandContext(ctx, binaryName, args...)
 	sess.Cmd = cmd
+
+	if engine == "gstreamer" {
+		cmd.Env = os.Environ()
+		if vaapiDevice != "" {
+			cmd.Env = append(cmd.Env, "GST_VAAPI_DRM_DEVICE="+vaapiDevice)
+		}
+	}
 
 	stderr, err := cmd.StderrPipe()
 	if err == nil {
@@ -890,7 +985,11 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 			for {
 				n, err := stderr.Read(buf)
 				if n > 0 {
-					fmt.Printf("[FFMPEG-HLS] %s", string(buf[:n]))
+					tag := "[FFMPEG-HLS]"
+					if engine == "gstreamer" {
+						tag = "[GSTREAMER-HLS]"
+					}
+					fmt.Printf("%s %s", tag, string(buf[:n]))
 				}
 				if err != nil {
 					break
@@ -908,9 +1007,9 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	go func(id string, session *HLSSession) {
 		err := cmd.Wait()
 		if err != nil {
-			fmt.Printf("[HLS Manager] FFmpeg exited for session %s: %v\n", id, err)
+			fmt.Printf("[HLS Manager] %s exited for session %s: %v\n", binaryName, id, err)
 		} else {
-			fmt.Printf("[HLS Manager] FFmpeg exited cleanly for session %s\n", id)
+			fmt.Printf("[HLS Manager] %s exited cleanly for session %s\n", binaryName, id)
 		}
 
 		hlsSessionsMu.Lock()
@@ -920,9 +1019,10 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 			go os.RemoveAll(session.Dir)
 		}
 		hlsSessionsMu.Unlock()
+		close(session.Done)
 	}(id, sess)
 
-	// Wait for the m3u8 file to be created before returning
+	// Wait for the m3u8 file to be created and contain at least one segment entry before returning
 	startupTimeout := 60 * time.Second
 	if rawTimeout := strings.TrimSpace(os.Getenv("FFMPEG_HLS_START_TIMEOUT_SECONDS")); rawTimeout != "" {
 		if seconds, err := strconv.Atoi(rawTimeout); err == nil && seconds > 0 {
@@ -932,16 +1032,23 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	deadline := time.Now().Add(startupTimeout)
 	found := false
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(filepath.Join(tempDir, "stream.m3u8")); err == nil {
-			found = true
-			break
+		playlistFile := filepath.Join(tempDir, "stream.m3u8")
+		if _, err := os.Stat(playlistFile); err == nil {
+			content, err := os.ReadFile(playlistFile)
+			if err == nil {
+				contentStr := string(content)
+				if strings.Contains(contentStr, "segment_") || strings.Contains(contentStr, ".ts") || strings.Contains(contentStr, ".m4s") {
+					found = true
+					break
+				}
+			}
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
 
 	if !found {
 		sess.Cancel()
-		writeError(w, http.StatusInternalServerError, "FFmpeg failed to create stream.m3u8 in time")
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("%s failed to create stream.m3u8 in time with segments", binaryName))
 		return
 	}
 
@@ -966,25 +1073,31 @@ func StopHLSStream(w http.ResponseWriter, r *http.Request) {
 	hlsSessionsMu.Unlock()
 
 	if exists {
-		sess.Cancel()
+		killProcessGracefully(sess.Cmd, sess.Cancel)
+		<-sess.Done
 		os.RemoveAll(sess.Dir)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "stopped"})
 }
 
-// StopAllStreams kills all running HLS sessions. Useful for freeing up tuners quickly.
-func StopAllStreams(w http.ResponseWriter, r *http.Request) {
+// ShutdownAllStreams cleans up all running HLS sessions.
+func ShutdownAllStreams() {
 	hlsSessionsMu.Lock()
+	defer hlsSessionsMu.Unlock()
 	for id, sess := range hlsSessions {
-		sess.Cancel()
+		killProcessGracefully(sess.Cmd, sess.Cancel)
+		<-sess.Done
 		go func(dir string) {
 			os.RemoveAll(dir)
 		}(sess.Dir)
 		delete(hlsSessions, id)
 	}
-	hlsSessionsMu.Unlock()
+}
 
+// StopAllStreams kills all running HLS sessions. Useful for freeing up tuners quickly.
+func StopAllStreams(w http.ResponseWriter, r *http.Request) {
+	ShutdownAllStreams()
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "all_stopped"})
 }
 
