@@ -11,3 +11,4 @@
   - `scp backend/internal/handlers/handlers.go mark@192.168.4.143:/home/mark/streamapp/backend/internal/handlers/`
   - `go build -o streamapp-backend ./cmd/server`
   - `./streamapp-backend`
+- **Go/SQLite Boolean Mapping**: When querying SQLite `INTEGER` columns that represent booleans (e.g. `is_hidden BOOLEAN DEFAULT 0`), do not use `sql.NullBool` in `rows.Scan`. Use `sql.NullInt64` and map it manually (`isHidden.Valid && isHidden.Int64 > 0`), as the `go-sqlite3` driver will silently fail or default to `false` when mapping to `sql.NullBool`.

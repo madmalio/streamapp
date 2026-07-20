@@ -112,6 +112,7 @@ func FetchXtream(baseURL, username, password string) ([]models.ChannelGroup, []m
 			StreamURL:     streamURL,
 			LogoURL:       xs.StreamIcon,
 			ChannelNumber: xs.Num,
+			GuideNumber:   fmt.Sprintf("%d", xs.Num),
 		})
 	}
 

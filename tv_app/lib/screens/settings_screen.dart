@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../services/app_settings.dart';
 import '../services/api_service.dart';
+import 'channel_management_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -238,6 +239,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 style: ElevatedButton.styleFrom(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
                   backgroundColor: Colors.deepOrangeAccent,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                'Channel Management',
+                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 12),
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (context) => const ChannelManagementScreen()),
+                  );
+                },
+                icon: const Icon(Icons.list_alt),
+                label: const Text('Manage Channels & Logos'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+                  backgroundColor: Colors.purpleAccent,
                   foregroundColor: Colors.white,
                 ),
               ),

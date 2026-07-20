@@ -63,8 +63,11 @@ class _GuideScreenState extends State<GuideScreen> {
         // EPG might not be synced yet
       }
 
+      // Filter out hidden channels and channels without a name
+      var filteredChannels = channels.where((c) => c.name.trim().isNotEmpty && !c.isHidden).toList();
+
       setState(() {
-        _channels = channels;
+        _channels = filteredChannels;
         _epgData = epg;
         if (_channels.isNotEmpty && _focusedChannel == null) {
           _focusedChannel = _channels.first;
@@ -141,6 +144,33 @@ class _GuideScreenState extends State<GuideScreen> {
     } catch (_) {}
   }
 
+  void _showRecordModal(EPGProgram program) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: const Text('Setup Recording', style: TextStyle(color: Colors.white)),
+          content: Text(
+            'Would you like to record ${program.title}?\n\nThis feature is coming soon!',
+            style: const TextStyle(color: Colors.white70),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(context),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+              child: const Text('Record', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _openChannel(Channel channel) async {
     // If we are opening the currently prewarmed channel, do NOT kill it!
     // PlayerScreen will adopt the exact same HLS Session ID from the backend.
@@ -162,8 +192,13 @@ class _GuideScreenState extends State<GuideScreen> {
   void _openGstTestStream() {
     final testChannel = Channel(
       id: 'gst-test',
+      playlistId: '',
+      groupId: '',
       name: 'GStreamer Test',
       streamUrl: _gstTestUrl,
+      logoUrl: '',
+      channelNumber: 0,
+      guideNumber: '',
       isFavorite: false,
     );
 
@@ -198,8 +233,13 @@ class _GuideScreenState extends State<GuideScreen> {
       
       final testChannel = Channel(
         id: 'test-srt',
+        playlistId: '',
+        groupId: '',
         name: 'SRT Test: ${targetChannel.name}',
         streamUrl: srtUrl,
+        logoUrl: '',
+        channelNumber: 0,
+        guideNumber: '',
         isFavorite: false,
       );
 
@@ -374,8 +414,26 @@ class _GuideScreenState extends State<GuideScreen> {
     );
   }
 
+  String _formatTimeGrid(DateTime time) {
+    final hour = time.hour > 12 ? time.hour - 12 : (time.hour == 0 ? 12 : time.hour);
+    final min = time.minute.toString().padLeft(2, '0');
+    final ampm = time.hour >= 12 ? 'PM' : 'AM';
+    return '$hour:$min $ampm';
+  }
+
   Widget _buildEpgGrid(String title, List<Channel> gridChannels) {
     if (gridChannels.isEmpty) return const SizedBox.shrink();
+
+    // Determine the timeline bounds based on now.
+    final now = DateTime.now();
+    // Align to the previous 30-minute mark
+    final startOfTimeline = DateTime(now.year, now.month, now.day, now.hour, now.minute < 30 ? 0 : 30);
+    // Show 4 hours
+    final endOfTimeline = startOfTimeline.add(const Duration(hours: 4));
+    
+    // We need a pixel per minute scale. E.g., 10 pixels per minute. 30 mins = 300px.
+    const double pixelsPerMinute = 10.0;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -383,81 +441,159 @@ class _GuideScreenState extends State<GuideScreen> {
           padding: const EdgeInsets.only(left: 10, bottom: 10),
           child: Text(
             title,
-            style: const TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w800,
-              color: Colors.white,
-              letterSpacing: 0.5,
-            ),
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.white, letterSpacing: 0.5),
           ),
         ),
-        ...gridChannels.map((chan) {
-          final epg = _epgData[chan.id.toLowerCase()];
-          return Container(
-            height: 90,
-            margin: const EdgeInsets.only(bottom: 12, left: 10, right: 10),
-            child: Row(
-              children: [
-                // Channel ID / Logo Block
-                Container(
-                  width: 140,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1A1A1A),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Center(
-                    child: Text(
-                      chan.name,
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
-                      textAlign: TextAlign.center,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                
-                // Now Playing
-                Expanded(
-                  flex: 3,
-                  child: epg?.currentProgram != null 
-                    ? EpgProgramBlock(
-                        program: epg!.currentProgram!,
-                        channel: chan,
-                        isNowPlaying: true,
-                        onFocus: _onChannelFocus,
-                        onPlay: () => _openChannel(chan),
-                      )
-                    : EpgProgramBlock(
-                        program: EPGProgram(id: '', channelId: chan.id, title: 'No EPG Data', description: '', startTime: DateTime.now(), endTime: DateTime.now().add(const Duration(hours: 1))),
-                        channel: chan,
-                        isNowPlaying: true,
-                        onFocus: _onChannelFocus,
-                        onPlay: () => _openChannel(chan),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Pinned Left Column (Channel Logos)
+            SizedBox(
+              width: 140,
+              child: Column(
+                children: [
+                  const SizedBox(height: 30), // Match the timeline header height
+                  ...gridChannels.map((chan) {
+                    return Container(
+                      height: 90,
+                      margin: const EdgeInsets.only(bottom: 12, left: 10, right: 10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1A1A1A),
+                        borderRadius: BorderRadius.zero,
                       ),
-                ),
-                const SizedBox(width: 12),
-
-                // Next Playing
-                Expanded(
-                  flex: 2,
-                  child: epg?.nextProgram != null 
-                    ? EpgProgramBlock(
-                        program: epg!.nextProgram!,
-                        channel: chan,
-                        isNowPlaying: false,
-                        onFocus: _onChannelFocus,
-                        onPlay: () => _openChannel(chan),
-                      )
-                    : Container(
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF121212),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          chan.logoUrl.isNotEmpty
+                              ? Image.network(
+                                  chan.logoUrl,
+                                  width: 80,
+                                  height: 40,
+                                  fit: BoxFit.contain,
+                                  errorBuilder: (context, error, stackTrace) => SizedBox(
+                                    width: 80,
+                                    height: 40,
+                                    child: Center(
+                                      child: Text(
+                                        chan.name,
+                                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                                        textAlign: TextAlign.center,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                              : SizedBox(
+                                  width: 80,
+                                  height: 40,
+                                  child: Center(
+                                    child: Text(
+                                      chan.name,
+                                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                                      textAlign: TextAlign.center,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ),
+                          if (chan.guideNumber.isNotEmpty) const SizedBox(height: 4),
+                          if (chan.guideNumber.isNotEmpty)
+                            Text(
+                              chan.guideNumber,
+                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white54),
+                            ),
+                        ],
                       ),
-                ),
-              ],
+                    );
+                  }),
+                ],
+              ),
             ),
-          );
-        }),
+            
+            // Scrollable Timeline + Programs
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                clipBehavior: Clip.none,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Timeline Header
+                    Container(
+                      height: 30,
+                      padding: const EdgeInsets.only(bottom: 5),
+                      child: Row(
+                        children: List.generate(8, (index) { // 8 half-hours = 4 hours
+                          final time = startOfTimeline.add(Duration(minutes: index * 30));
+                          final formatted = _formatTimeGrid(time);
+                          return SizedBox(
+                            width: 30 * pixelsPerMinute,
+                            child: Text(
+                              formatted,
+                              style: const TextStyle(color: Colors.white54, fontWeight: FontWeight.bold, fontSize: 16),
+                            ),
+                          );
+                        }),
+                      ),
+                    ),
+                    
+                    // Program Rows
+                    ...gridChannels.map((chan) {
+                      final epg = _epgData[chan.id.toLowerCase()];
+                      final programs = epg?.programs ?? [];
+                      
+                      return Container(
+                        height: 90,
+                        width: 4 * 60 * pixelsPerMinute, // 4 hours total width
+                        margin: const EdgeInsets.only(bottom: 12),
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          children: programs.map((p) {
+                            var pStart = p.startTime;
+                            var pEnd = p.endTime;
+                            
+                            if (pStart.isBefore(startOfTimeline)) pStart = startOfTimeline;
+                            if (pEnd.isAfter(endOfTimeline)) pEnd = endOfTimeline;
+                            
+                            if (pEnd.isBefore(startOfTimeline) || pStart.isAfter(endOfTimeline)) {
+                              return const SizedBox.shrink(); // Outside view
+                            }
+
+                            final offsetMinutes = pStart.difference(startOfTimeline).inMinutes;
+                            final durationMinutes = pEnd.difference(pStart).inMinutes;
+                            
+                            final leftOffset = offsetMinutes * pixelsPerMinute;
+                            final width = durationMinutes * pixelsPerMinute;
+                            
+                            final isNow = !now.isBefore(p.startTime) && now.isBefore(p.endTime);
+                            
+                            return Positioned(
+                              left: leftOffset,
+                              width: width - 4, // 4px spacing between blocks
+                              height: 90,
+                              child: EpgProgramBlock(
+                                program: p,
+                                channel: chan,
+                                isNowPlaying: isNow,
+                                onFocus: _onChannelFocus,
+                                onPlay: () {
+                                  if (isNow) {
+                                    _openChannel(chan);
+                                  } else {
+                                    _showRecordModal(p);
+                                  }
+                                },
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      );
+                    }),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
       ],
     );
   }
@@ -546,11 +682,11 @@ class _GuideScreenState extends State<GuideScreen> {
                     icon: const Icon(Icons.settings, size: 32, color: Colors.white54),
                     tooltip: 'Settings',
                     onPressed: () async {
-                      final changed = await Navigator.push<bool>(
+                      await Navigator.push(
                         context,
                         MaterialPageRoute(builder: (_) => const SettingsScreen()),
                       );
-                      if (changed == true && mounted) {
+                      if (mounted) {
                         await _loadChannels();
                       }
                     },
@@ -634,6 +770,7 @@ class _ChannelCardState extends State<ChannelCard> {
                     : [],
               ),
               child: Stack(
+                alignment: Alignment.center,
                 children: [
                   // Glassmorphism highlight
                   Positioned.fill(
@@ -648,15 +785,57 @@ class _ChannelCardState extends State<ChannelCard> {
                       ),
                     ),
                   ),
-                  Center(
-                    child: Text(
-                      widget.channel.name,
-                      style: TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.bold,
-                        color: active ? Colors.white : Colors.white70,
-                      ),
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      widget.channel.logoUrl.isNotEmpty
+                          ? Image.network(
+                              widget.channel.logoUrl,
+                              width: 80,
+                              height: 60,
+                              fit: BoxFit.contain,
+                              errorBuilder: (context, error, stackTrace) => SizedBox(
+                                width: 80,
+                                height: 60,
+                                child: Center(
+                                  child: Text(
+                                    widget.channel.name,
+                                    style: TextStyle(
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.bold,
+                                      color: active ? Colors.white : Colors.white70,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ),
+                            )
+                          : SizedBox(
+                              width: 80,
+                              height: 60,
+                              child: Center(
+                                child: Text(
+                                  widget.channel.name,
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                    color: active ? Colors.white : Colors.white70,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ),
+                      if (widget.channel.guideNumber.isNotEmpty) const SizedBox(width: 16),
+                      if (widget.channel.guideNumber.isNotEmpty)
+                        Text(
+                          widget.channel.guideNumber,
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                            color: active ? Colors.white : Colors.white70,
+                          ),
+                        ),
+                    ],
                   ),
                 ],
               ),
@@ -736,46 +915,42 @@ class _EpgProgramBlockState extends State<EpgProgramBlock> {
         onExit: (_) => setState(() => _isHovered = false),
         child: GestureDetector(
           onTap: widget.onPlay,
-          child: AnimatedScale(
-            scale: active ? 1.02 : 1.0,
+          child: AnimatedContainer(
             duration: const Duration(milliseconds: 200),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: active 
-                  ? Colors.blueAccent.withOpacity(0.9)
-                  : (widget.isNowPlaying ? const Color(0xFF2A2A2A) : const Color(0xFF1E1E1E)),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: active ? Colors.white : Colors.white.withOpacity(0.05),
-                  width: active ? 2 : 1,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            decoration: BoxDecoration(
+              color: active 
+                ? Colors.blueAccent.withOpacity(0.9)
+                : (widget.isNowPlaying ? const Color(0xFF2A2A2A) : const Color(0xFF1E1E1E)),
+              borderRadius: BorderRadius.zero,
+              border: Border.all(
+                color: active ? Colors.white : Colors.white.withOpacity(0.05),
+                width: active ? 2 : 1,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  widget.program.title,
+                  style: TextStyle(
+                    color: active ? Colors.white : Colors.white.withOpacity(0.9),
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    widget.program.title,
-                    style: TextStyle(
-                      color: active ? Colors.white : Colors.white.withOpacity(0.9),
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                const SizedBox(height: 4),
+                Text(
+                  '${_formatTime(widget.program.startTime)} - ${_formatTime(widget.program.endTime)}',
+                  style: TextStyle(
+                    color: active ? Colors.white70 : Colors.white54,
+                    fontSize: 14,
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${_formatTime(widget.program.startTime)} - ${_formatTime(widget.program.endTime)}',
-                    style: TextStyle(
-                      color: active ? Colors.white70 : Colors.white54,
-                      fontSize: 14,
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),

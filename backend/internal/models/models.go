@@ -26,6 +26,8 @@ type Channel struct {
 	StreamURL     string `json:"stream_url"`
 	LogoURL       string `json:"logo_url"`
 	ChannelNumber int    `json:"channel_number"`
+	GuideNumber   string `json:"guide_number"`
+	IsHidden      bool   `json:"is_hidden"`
 }
 
 // EPGProgram represents a program guide listing for a channel.

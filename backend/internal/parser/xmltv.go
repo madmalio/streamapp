@@ -63,8 +63,9 @@ func ParseXMLTVTime(val string) (time.Time, error) {
 }
 
 // ParseXMLTV streams programs from an XMLTV EPG source and calls the callback for each.
-func ParseXMLTV(r io.Reader, callback func(prog models.EPGProgram) error) error {
+func ParseXMLTV(r io.Reader, callback func(prog models.EPGProgram, xmlChan *XMLTVChannel) error) error {
 	decoder := xml.NewDecoder(r)
+	chanMap := make(map[string]*XMLTVChannel)
 
 	for {
 		t, err := decoder.Token()
@@ -77,7 +78,12 @@ func ParseXMLTV(r io.Reader, callback func(prog models.EPGProgram) error) error 
 
 		switch se := t.(type) {
 		case xml.StartElement:
-			if se.Name.Local == "programme" {
+			if se.Name.Local == "channel" {
+				var c XMLTVChannel
+				if err := decoder.DecodeElement(&c, &se); err == nil {
+					chanMap[c.ID] = &c
+				}
+			} else if se.Name.Local == "programme" {
 				var p XMLTVProgramme
 				if err := decoder.DecodeElement(&p, &se); err != nil {
 					return err
@@ -109,7 +115,12 @@ func ParseXMLTV(r io.Reader, callback func(prog models.EPGProgram) error) error 
 					EndTime:     endTime,
 				}
 
-				if err := callback(prog); err != nil {
+				var xmlChan *XMLTVChannel
+				if c, ok := chanMap[p.Channel]; ok {
+					xmlChan = c
+				}
+
+				if err := callback(prog, xmlChan); err != nil {
 					return err
 				}
 			}

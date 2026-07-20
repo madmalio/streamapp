@@ -24,6 +24,7 @@ func ParseM3U(r io.Reader) ([]models.Channel, error) {
 	var currentLogo string
 	var currentGroup string
 	var currentChNo int
+	var currentGuideNum string
 	hasExtInf := false
 
 	for scanner.Scan() {
@@ -33,7 +34,7 @@ func ParseM3U(r io.Reader) ([]models.Channel, error) {
 		}
 
 		if strings.HasPrefix(line, "#EXTINF:") {
-			currentName, currentLogo, currentGroup, currentChNo = parseExtInf(line)
+			currentName, currentLogo, currentGroup, currentChNo, currentGuideNum = parseExtInf(line)
 			hasExtInf = true
 			continue
 		}
@@ -52,6 +53,7 @@ func ParseM3U(r io.Reader) ([]models.Channel, error) {
 				StreamURL:     line,
 				LogoURL:       currentLogo,
 				ChannelNumber: currentChNo,
+				GuideNumber:   currentGuideNum,
 			}
 			channels = append(channels, channel)
 
@@ -60,6 +62,7 @@ func ParseM3U(r io.Reader) ([]models.Channel, error) {
 			currentLogo = ""
 			currentGroup = ""
 			currentChNo = 0
+			currentGuideNum = ""
 			hasExtInf = false
 		}
 	}
@@ -72,7 +75,7 @@ func ParseM3U(r io.Reader) ([]models.Channel, error) {
 }
 
 // parseExtInf parses the metadata from a "#EXTINF" line.
-func parseExtInf(line string) (name string, logo string, group string, chno int) {
+func parseExtInf(line string) (name string, logo string, group string, chno int, guideNum string) {
 	content := strings.TrimPrefix(line, "#EXTINF:")
 
 	// Find the comma separating duration & attributes from the channel name
@@ -102,6 +105,7 @@ func parseExtInf(line string) (name string, logo string, group string, chno int)
 	if chnoStr == "" {
 		chnoStr = extractAttribute(attrPart, "chno")
 	}
+	guideNum = chnoStr
 	if chnoStr != "" {
 		if val, err := strconv.Atoi(chnoStr); err == nil {
 			chno = val
@@ -116,7 +120,7 @@ func parseExtInf(line string) (name string, logo string, group string, chno int)
 		group = extractAttribute(attrPart, "group")
 	}
 
-	return name, logo, group, chno
+	return name, logo, group, chno, guideNum
 }
 
 // extractAttribute retrieves the value of a key-value attribute (e.g. key="value" or key=value)

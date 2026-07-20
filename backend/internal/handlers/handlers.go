@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -297,7 +298,7 @@ func GetChannels(w http.ResponseWriter, r *http.Request) {
 	groupID := r.URL.Query().Get("groupId")
 	search := r.URL.Query().Get("search")
 
-	query := "SELECT id, group_id, name, stream_url, logo_url, channel_number FROM channels WHERE 1=1"
+	query := "SELECT id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden FROM channels WHERE 1=1"
 	args := []interface{}{}
 
 	if playlistID != "" {
@@ -312,7 +313,6 @@ func GetChannels(w http.ResponseWriter, r *http.Request) {
 		query += " AND name LIKE ?"
 		args = append(args, "%"+search+"%")
 	}
-	query += " ORDER BY channel_number ASC, name ASC"
 
 	rows, err := database.DB.Query(query, args...)
 	if err != nil {
@@ -326,16 +326,105 @@ func GetChannels(w http.ResponseWriter, r *http.Request) {
 		var c models.Channel
 		var groupIDOpt sql.NullString
 		var logoURLOpt sql.NullString
-		if err := rows.Scan(&c.ID, &groupIDOpt, &c.Name, &c.StreamURL, &logoURLOpt, &c.ChannelNumber); err != nil {
+		var guideNumOpt sql.NullString
+		var isHiddenInt sql.NullInt64
+		if err := rows.Scan(&c.ID, &groupIDOpt, &c.Name, &c.StreamURL, &logoURLOpt, &c.ChannelNumber, &guideNumOpt, &isHiddenInt); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		c.GroupID = groupIDOpt.String
 		c.LogoURL = logoURLOpt.String
+		c.GuideNumber = guideNumOpt.String
+		c.IsHidden = isHiddenInt.Valid && isHiddenInt.Int64 > 0
 		channels = append(channels, c)
 	}
 
+	// Sort channels: channel_number ASC, then parse guide_number for major/minor, then name
+	sort.Slice(channels, func(i, j int) bool {
+		if channels[i].ChannelNumber != channels[j].ChannelNumber {
+			return channels[i].ChannelNumber < channels[j].ChannelNumber
+		}
+		g1 := channels[i].GuideNumber
+		g2 := channels[j].GuideNumber
+		if g1 != "" && g2 != "" {
+			parts1 := strings.Split(strings.ReplaceAll(g1, "-", "."), ".")
+			parts2 := strings.Split(strings.ReplaceAll(g2, "-", "."), ".")
+			for k := 0; k < len(parts1) && k < len(parts2); k++ {
+				num1, err1 := strconv.Atoi(parts1[k])
+				num2, err2 := strconv.Atoi(parts2[k])
+				if err1 == nil && err2 == nil {
+					if num1 != num2 {
+						return num1 < num2
+					}
+				} else {
+					if parts1[k] != parts2[k] {
+						return parts1[k] < parts2[k]
+					}
+				}
+			}
+			if len(parts1) != len(parts2) {
+				return len(parts1) < len(parts2)
+			}
+		}
+		return channels[i].Name < channels[j].Name
+	})
+
 	writeJSON(w, http.StatusOK, channels)
+}
+
+// UpdateChannelLogo handles manual overrides of a channel's logo.
+func UpdateChannelLogo(w http.ResponseWriter, r *http.Request) {
+	chanID := chi.URLParam(r, "id")
+	if chanID == "" {
+		writeError(w, http.StatusBadRequest, "Missing channel ID")
+		return
+	}
+
+	var req struct {
+		LogoURL string `json:"logo_url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	_, err := database.DB.Exec("UPDATE channels SET logo_url = ? WHERE id = ?", req.LogoURL, chanID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Database error: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+// UpdateChannelVisibility handles toggling a channel's visibility.
+func UpdateChannelVisibility(w http.ResponseWriter, r *http.Request) {
+	chanID := chi.URLParam(r, "id")
+	if chanID == "" {
+		writeError(w, http.StatusBadRequest, "Missing channel ID")
+		return
+	}
+
+	var req struct {
+		IsHidden bool `json:"is_hidden"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	isHiddenInt := 0
+	if req.IsHidden {
+		isHiddenInt = 1
+	}
+
+	_, err := database.DB.Exec("UPDATE channels SET is_hidden = ? WHERE id = ?", isHiddenInt, chanID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Database error: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }
 
 // SyncEPGHandler parses and syncs EPG data from an XMLTV URL.
@@ -359,17 +448,19 @@ func SyncEPGHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetLiveEPG retrieves the current and next program listing for active channels.
+// GetLiveEPG retrieves the program listing for active channels for the next 4 hours.
 func GetLiveEPG(w http.ResponseWriter, r *http.Request) {
-	now := time.Now().Format("2006-01-02 15:04:05")
+	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339)
+	futureStr := now.Add(4 * time.Hour).Format(time.RFC3339)
 
-	// Get current active programs
-	currentQuery := `
-		SELECT channel_id, title, description, start_time, end_time 
+	query := `
+		SELECT id, channel_id, title, description, start_time, end_time 
 		FROM epg_programs 
-		WHERE start_time <= ? AND end_time > ?`
+		WHERE end_time > ? AND start_time < ?
+		ORDER BY channel_id, start_time ASC`
 
-	rows, err := database.DB.Query(currentQuery, now, now)
+	rows, err := database.DB.Query(query, nowStr, futureStr)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -377,6 +468,7 @@ func GetLiveEPG(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type ProgramDetails struct {
+		ID          string    `json:"id"`
 		Title       string    `json:"title"`
 		Description string    `json:"description"`
 		StartTime   time.Time `json:"start_time"`
@@ -384,47 +476,21 @@ func GetLiveEPG(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type ChannelEPG struct {
-		Current *ProgramDetails `json:"current"`
-		Next    *ProgramDetails `json:"next"`
+		Programs []ProgramDetails `json:"programs"`
 	}
 
 	epgMap := make(map[string]*ChannelEPG)
 
 	for rows.Next() {
-		var chanID string
+		var id, chanID string
 		var p ProgramDetails
-		if err := rows.Scan(&chanID, &p.Title, &p.Description, &p.StartTime, &p.EndTime); err == nil {
-			epgMap[chanID] = &ChannelEPG{
-				Current: &p,
-			}
-		}
-	}
-
-	// Fetch next programs (programs starting after now, sorted by start_time, grouped by channel)
-	nextQuery := `
-		SELECT channel_id, title, description, start_time, end_time 
-		FROM epg_programs 
-		WHERE start_time > ? 
-		ORDER BY start_time ASC`
-
-	nextRows, err := database.DB.Query(nextQuery, now)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	defer nextRows.Close()
-
-	for nextRows.Next() {
-		var chanID string
-		var p ProgramDetails
-		if err := nextRows.Scan(&chanID, &p.Title, &p.Description, &p.StartTime, &p.EndTime); err == nil {
+		if err := rows.Scan(&id, &chanID, &p.Title, &p.Description, &p.StartTime, &p.EndTime); err == nil {
+			p.ID = id
 			if entry, exists := epgMap[chanID]; exists {
-				if entry.Next == nil {
-					entry.Next = &p
-				}
+				entry.Programs = append(entry.Programs, p)
 			} else {
 				epgMap[chanID] = &ChannelEPG{
-					Next: &p,
+					Programs: []ProgramDetails{p},
 				}
 			}
 		}
@@ -482,6 +548,43 @@ func hlsBufsizeFromBitrate(bitrate string) string {
 	return fmt.Sprintf("%g%s", value*multiplier, unit)
 }
 
+type chanState struct {
+	ID       string
+	LogoURL  string
+	IsHidden bool
+}
+
+func getExistingChannelState(pID string) (map[string]chanState, error) {
+	rows, err := database.DB.Query("SELECT id, name, logo_url, is_hidden FROM channels WHERE playlist_id = ?", pID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	state := make(map[string]chanState)
+	for rows.Next() {
+		var id, name string
+		var logoOpt sql.NullString
+		var isHidden sql.NullBool
+		if err := rows.Scan(&id, &name, &logoOpt, &isHidden); err == nil {
+			state[name] = chanState{
+				ID:       id,
+				LogoURL:  logoOpt.String,
+				IsHidden: isHidden.Bool,
+			}
+		}
+	}
+	return state, nil
+}
+
+func applyExistingState(ch *models.Channel, state map[string]chanState) {
+	if existing, ok := state[ch.Name]; ok {
+		ch.ID = existing.ID
+		ch.LogoURL = existing.LogoURL
+		ch.IsHidden = existing.IsHidden
+	}
+}
+
 func syncPlaylistSource(pID, urlPath, pType, username, password string) error {
 	pType = strings.ToUpper(pType)
 	switch pType {
@@ -517,6 +620,8 @@ func syncM3U(pID, urlPath string) error {
 		return err
 	}
 
+	state, _ := getExistingChannelState(pID)
+
 	tx, err := database.DB.Begin()
 	if err != nil {
 		return err
@@ -542,19 +647,24 @@ func syncM3U(pID, urlPath string) error {
 		}
 	}
 
-	stmt, err := tx.Prepare("INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, ch := range channels {
+		applyExistingState(&ch, state)
 		gName := ch.GroupID
 		if gName == "" {
 			gName = "Uncategorized"
 		}
 		gID := groupMap[gName]
-		_, err = stmt.Exec(ch.ID, pID, gID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber)
+		isHiddenInt := 0
+		if ch.IsHidden {
+			isHiddenInt = 1
+		}
+		_, err = stmt.Exec(ch.ID, pID, gID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt)
 		if err != nil {
 			return err
 		}
@@ -568,6 +678,8 @@ func syncXtream(pID, urlPath, username, password string) error {
 	if err != nil {
 		return err
 	}
+
+	state, _ := getExistingChannelState(pID)
 
 	tx, err := database.DB.Begin()
 	if err != nil {
@@ -590,14 +702,19 @@ func syncXtream(pID, urlPath, username, password string) error {
 		}
 	}
 
-	chanStmt, err := tx.Prepare("INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	chanStmt, err := tx.Prepare("INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
 	defer chanStmt.Close()
 
 	for _, ch := range channels {
-		_, err = chanStmt.Exec(ch.ID, pID, ch.GroupID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber)
+		applyExistingState(&ch, state)
+		isHiddenInt := 0
+		if ch.IsHidden {
+			isHiddenInt = 1
+		}
+		_, err = chanStmt.Exec(ch.ID, pID, ch.GroupID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt)
 		if err != nil {
 			return err
 		}
@@ -611,6 +728,8 @@ func syncHDHomeRun(pID, urlPath string) error {
 	if err != nil {
 		return err
 	}
+
+	state, _ := getExistingChannelState(pID)
 
 	tx, err := database.DB.Begin()
 	if err != nil {
@@ -626,14 +745,19 @@ func syncHDHomeRun(pID, urlPath string) error {
 		return err
 	}
 
-	stmt, err := tx.Prepare("INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, ch := range channels {
-		_, err = stmt.Exec(ch.ID, pID, gID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber)
+		applyExistingState(&ch, state)
+		isHiddenInt := 0
+		if ch.IsHidden {
+			isHiddenInt = 1
+		}
+		_, err = stmt.Exec(ch.ID, pID, gID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt)
 		if err != nil {
 			return err
 		}
@@ -660,21 +784,29 @@ func syncEPGSource(xmltvURL string) error {
 	}
 
 	// Fetch channels for matching
-	rows, err := database.DB.Query("SELECT id, name, channel_number FROM channels")
+	rows, err := database.DB.Query("SELECT id, name, channel_number, guide_number, logo_url FROM channels")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
 	channelMap := make(map[string]string)
-	numberMap := make(map[string]string)
+	guideNumMap := make(map[string]string)
+	idToName := make(map[string]string)
+	idToLogo := make(map[string]string)
 	for rows.Next() {
 		var id, name string
-		var chno int
-		if err := rows.Scan(&id, &name, &chno); err == nil {
+		var chnoOpt sql.NullInt64
+		var guideNumOpt sql.NullString
+		var logoOpt sql.NullString
+		if err := rows.Scan(&id, &name, &chnoOpt, &guideNumOpt, &logoOpt); err == nil {
 			channelMap[strings.ToLower(name)] = id
-			if chno > 0 {
-				numberMap[fmt.Sprintf("%d", chno)] = id
+			if guideNumOpt.Valid && guideNumOpt.String != "" {
+				guideNumMap[guideNumOpt.String] = id
+			}
+			idToName[id] = name
+			if logoOpt.Valid {
+				idToLogo[id] = logoOpt.String
 			}
 		}
 	}
@@ -685,8 +817,19 @@ func syncEPGSource(xmltvURL string) error {
 	}
 	defer tx.Rollback()
 
-	// Clear old guide data
-	_, _ = tx.Exec("DELETE FROM epg_programs")
+	// Clear old guide data and ensure schema is correct
+	_, _ = tx.Exec("DROP TABLE IF EXISTS epg_programs")
+	_, err = tx.Exec(`CREATE TABLE epg_programs (
+		id TEXT PRIMARY KEY,
+		channel_id TEXT NOT NULL,
+		title TEXT NOT NULL,
+		description TEXT,
+		start_time DATETIME NOT NULL,
+		end_time DATETIME NOT NULL
+	)`)
+	if err != nil {
+		return fmt.Errorf("recreate epg_programs failed: %w", err)
+	}
 
 	stmt, err := tx.Prepare("INSERT INTO epg_programs (id, channel_id, title, description, start_time, end_time) VALUES (?, ?, ?, ?, ?, ?)")
 	if err != nil {
@@ -694,22 +837,55 @@ func syncEPGSource(xmltvURL string) error {
 	}
 	defer stmt.Close()
 
-	callback := func(prog models.EPGProgram) error {
+	logoMap := make(map[string]string)
+
+	callback := func(prog models.EPGProgram, xmlChan *parser.XMLTVChannel) error {
 		epgChanID := strings.ToLower(prog.ChannelID)
 		var matchedChanID string
 
 		if id, exists := channelMap[epgChanID]; exists {
 			matchedChanID = id
 		} else {
-			for name, id := range channelMap {
-				if strings.Contains(epgChanID, name) || strings.Contains(name, epgChanID) {
-					matchedChanID = id
-					break
+			if xmlChan != nil {
+				// Try guide number match first
+				for _, dn := range xmlChan.DisplayName {
+					if id, exists := guideNumMap[dn]; exists {
+						matchedChanID = id
+						break
+					}
+				}
+
+				if matchedChanID == "" {
+					for _, dn := range xmlChan.DisplayName {
+						dnLower := strings.ToLower(dn)
+						if id, exists := channelMap[dnLower]; exists {
+							matchedChanID = id
+							break
+						}
+					}
+				}
+				
+				// Fallback: prefix match
+				if matchedChanID == "" {
+					for _, dn := range xmlChan.DisplayName {
+						dnLower := strings.ToLower(dn)
+						for dbName, dbID := range channelMap {
+							if dbName != "" && len(dbName) > 3 && (strings.HasPrefix(dnLower, dbName) || strings.HasPrefix(dbName, dnLower)) {
+								matchedChanID = dbID
+								break
+							}
+						}
+						if matchedChanID != "" {
+							break
+						}
+					}
 				}
 			}
+
+			// Fallback 2: Check if XML channel ID starts with DB channel name
 			if matchedChanID == "" {
-				for num, id := range numberMap {
-					if strings.HasPrefix(epgChanID, num+".") || epgChanID == num {
+				for name, id := range channelMap {
+					if name != "" && len(name) > 3 && (strings.HasPrefix(epgChanID, name) || strings.HasPrefix(name, epgChanID)) {
 						matchedChanID = id
 						break
 					}
@@ -718,9 +894,34 @@ func syncEPGSource(xmltvURL string) error {
 		}
 
 		if matchedChanID != "" {
+			existingLogo := idToLogo[matchedChanID]
+			isOverride := existingLogo != "" && !strings.Contains(existingLogo, "hdhomerun") && !strings.Contains(existingLogo, "silicondust") && !strings.Contains(existingLogo, "githubusercontent")
+
+			if !isOverride {
+				hasSiliconDust := false
+				if xmlChan != nil && len(xmlChan.Icon) > 0 && xmlChan.Icon[0].Src != "" {
+					logoMap[matchedChanID] = xmlChan.Icon[0].Src
+					hasSiliconDust = true
+				}
+
+				if !hasSiliconDust {
+					dbName := idToName[matchedChanID]
+					callsign := strings.ToLower(dbName)
+					callsign = strings.ReplaceAll(callsign, "-hd", "")
+					callsign = strings.ReplaceAll(callsign, "-dt", "")
+					callsign = strings.ReplaceAll(callsign, " ", "")
+					logoMap[matchedChanID] = fmt.Sprintf("https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/united-states/%s.png", callsign)
+				}
+			} else {
+				logoMap[matchedChanID] = existingLogo
+			}
+
 			progID := uuid.New().String()
-			_, err = stmt.Exec(progID, matchedChanID, prog.Title, prog.Description, prog.StartTime, prog.EndTime)
-			return err
+			_, err = stmt.Exec(progID, matchedChanID, prog.Title, prog.Description, prog.StartTime.UTC().Format(time.RFC3339), prog.EndTime.UTC().Format(time.RFC3339))
+			if err != nil {
+				return fmt.Errorf("constraint error on channel_id=%s: %w", matchedChanID, err)
+			}
+			return nil
 		}
 
 		return nil
@@ -738,7 +939,15 @@ func syncEPGSource(xmltvURL string) error {
 		return err
 	}
 
-	return tx.Commit()
+	for chanID, newLogoURL := range logoMap {
+		_, _ = database.DB.Exec("UPDATE channels SET logo_url = ? WHERE id = ?", newLogoURL, chanID)
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("tx.Commit failed: %w", err)
+	}
+	return nil
 }
 
 // flushWriter wraps a writer and flushes it on every write to reduce streaming latency.

@@ -71,6 +71,8 @@ func main() {
 
 		// Channels
 		api.Get("/channels", handlers.GetChannels)
+		api.Put("/channels/{id}/logo", handlers.UpdateChannelLogo)
+		api.Put("/channels/{id}/visibility", handlers.UpdateChannelVisibility)
 
 		// EPG
 		api.Get("/epg/live", handlers.GetLiveEPG)

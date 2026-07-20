@@ -46,6 +46,8 @@ func InitDB(dbPath string) (*sql.DB, error) {
 			stream_url TEXT NOT NULL,
 			logo_url TEXT,
 			channel_number INTEGER DEFAULT 0,
+			guide_number TEXT DEFAULT '',
+			is_hidden BOOLEAN DEFAULT 0,
 			FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
 			FOREIGN KEY (group_id) REFERENCES channel_groups(id) ON DELETE CASCADE
 		);`,
@@ -55,8 +57,7 @@ func InitDB(dbPath string) (*sql.DB, error) {
 			title TEXT NOT NULL,
 			description TEXT,
 			start_time DATETIME NOT NULL,
-			end_time DATETIME NOT NULL,
-			FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+			end_time DATETIME NOT NULL
 		);`,
 		// Indexes for optimizing query operations
 		`CREATE INDEX IF NOT EXISTS idx_channels_playlist ON channels(playlist_id);`,
@@ -70,6 +71,10 @@ func InitDB(dbPath string) (*sql.DB, error) {
 			return nil, err
 		}
 	}
+
+	// Migrations
+	_, _ = db.Exec("ALTER TABLE channels ADD COLUMN is_hidden BOOLEAN DEFAULT 0;")
+	_, _ = db.Exec("ALTER TABLE channels ADD COLUMN guide_number TEXT DEFAULT ''")
 
 	DB = db
 	log.Println("SQLite database initialized successfully at", dbPath)

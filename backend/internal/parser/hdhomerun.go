@@ -93,6 +93,7 @@ func FetchHDHomeRunChannels(ipOrLineupURL string) ([]models.Channel, error) {
 			StreamURL:     hc.URL,
 			LogoURL:       "", // HDHomeRun line-ups do not specify logo images
 			ChannelNumber: chno,
+			GuideNumber:   hc.GuideNumber,
 		})
 	}
 
@@ -100,7 +101,7 @@ func FetchHDHomeRunChannels(ipOrLineupURL string) ([]models.Channel, error) {
 }
 
 // FetchHDHomeRunEPG discovers a local tuner, extracts its DeviceAuth, and downloads the XMLTV from SiliconDust.
-func FetchHDHomeRunEPG(ipOrDiscoverURL string, callback func(prog models.EPGProgram) error) error {
+func FetchHDHomeRunEPG(ipOrDiscoverURL string, callback func(prog models.EPGProgram, xmlChan *XMLTVChannel) error) error {
 	var discoverURL string
 	if ipOrDiscoverURL == "" {
 		devices, err := DiscoverHDHomeRun()
@@ -144,6 +145,8 @@ func FetchHDHomeRunEPG(ipOrDiscoverURL string, callback func(prog models.EPGProg
 	}
 	// The SiliconDust XMLTV is large and typically gzipped
 	req.Header.Set("Accept-Encoding", "gzip")
+	// SiliconDust blocks default Go-http-client with 403 Forbidden
+	req.Header.Set("User-Agent", "StreamApp/1.0 (Mozilla/5.0)")
 
 	// Use a longer timeout for downloading the large guide file
 	clientEPG := &http.Client{Timeout: 60 * time.Second}

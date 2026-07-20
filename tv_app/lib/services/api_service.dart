@@ -68,6 +68,30 @@ class ApiService {
     }
   }
 
+  Future<void> updateChannelLogo(String channelId, String logoUrl) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/channels/$channelId/logo'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'logo_url': logoUrl}),
+    ).timeout(const Duration(seconds: 10));
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update channel logo: ${response.body}');
+    }
+  }
+
+  Future<void> updateChannelVisibility(String channelId, bool isHidden) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/channels/$channelId/visibility'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'is_hidden': isHidden}),
+    ).timeout(const Duration(seconds: 10));
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update channel visibility: ${response.body}');
+    }
+  }
+
   Future<void> addPlaylist({required String name, required String urlPath, required String type}) async {
     final response = await http.post(
       Uri.parse('$baseUrl/playlists'),

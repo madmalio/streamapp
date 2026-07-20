@@ -17,15 +17,18 @@
   - Run: `./streamapp-backend`
 
 ## What Was Proven & Modified Today
-- Old WebRTC routing in the Go backend was deleted because the Flutter app now directly contacts MediaMTX's `runOnDemand` WHEP path for WebRTC.
-- The GStreamer pipeline was aggressively optimized for low latency (`latency=0`, `max-bframes=0`, `config-interval=-1`, `alignment=7`) and pushes to MediaMTX via `srtclientsink`.
-- The FFmpeg pipeline was modified to push to MediaMTX via `rtsp`.
-- The Go backend now polls localhost (`127.0.0.1:8888/hls_<id>/index.m3u8`) to verify when MediaMTX is ready, preventing firewall loopback issues.
+- Added a `channel_management_screen.dart` allowing users to hide channels and edit logos from the Flutter Settings page.
+- Updated `guide_screen.dart` to filter out hidden channels on the frontend (`filteredChannels = channels.where((c) => !c.isHidden)`).
+- Removed inline channel editing from the Guide UI to clean up the interface.
+- Added `is_hidden` column to the `channels` SQLite table.
+- Added `PUT /api/channels/{id}/visibility` API endpoint.
+- **Fixed a critical bug:** The go-sqlite3 driver silently fails to map `INTEGER` columns (used for booleans like `is_hidden`) into `sql.NullBool`. We updated `handlers.go` `GetChannels` to use `sql.NullInt64` instead and mapped it manually.
 
 ## Current Problem (End of Session)
-- We finalized the Hybrid HLS Architecture. FFmpeg was proven to be extremely fast. GStreamer was slightly slower to start up due to pipeline initialization, but the user is about to test the aggressively optimized GStreamer pipeline provided right at the end of the session.
+- **Deployment Handoff:** The user wants to start a new chat because the backend was updated locally, but the final `go build` and restart has not been executed on the dev-server (`192.168.4.143`). The user's Flutter app is correctly configured to hide channels, but it's hitting the old un-updated backend, which constantly tells Flutter that `is_hidden = false`. 
 
 ## Next Steps (Recommended)
-1. Get the user's feedback on whether the new optimized GStreamer pipeline starts up fast enough.
-2. Address any remaining custom UI overlay tasks in `player_screen.dart` (the user previously mentioned that the `media_kit_video` `MaterialDesktopVideoControlsTheme` absorbs touch events, requiring overlays to be placed outside the bottom control bar).
-3. If HLS latency is still an issue, continue optimizing MediaMTX's `hlsSegmentDuration` and `hlsPartDuration`.
+1. **Verify Deployment:** The next agent needs to assist the user in deploying the recent `handlers.go` changes to the dev-server (`192.168.4.143`) and restarting the backend.
+2. **Review EPG Guide Data Bug:** Address the ongoing issue where EPG guide data is not showing up despite being successfully parsed. Verify `guide_screen.dart` rendering logic and `epg_programs` mapping in the DB.
+3. Get the user's feedback on whether the new optimized GStreamer pipeline starts up fast enough.
+4. Address any remaining custom UI overlay tasks in `player_screen.dart`.
