@@ -644,29 +644,38 @@ func syncHDHomeRun(pID, urlPath string) error {
 
 func syncEPGSource(xmltvURL string) error {
 	var r io.Reader
-	if strings.HasPrefix(xmltvURL, "http://") || strings.HasPrefix(xmltvURL, "https://") {
-		resp, err := http.Get(xmltvURL)
-		if err != nil {
-			return err
+	isHDHomeRunAuto := (xmltvURL == "HDHOMERUN_AUTO")
+
+	if !isHDHomeRunAuto {
+		if strings.HasPrefix(xmltvURL, "http://") || strings.HasPrefix(xmltvURL, "https://") {
+			resp, err := http.Get(xmltvURL)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+			r = resp.Body
+		} else {
+			return fmt.Errorf("EPG URL must start with http or https")
 		}
-		defer resp.Body.Close()
-		r = resp.Body
-	} else {
-		return fmt.Errorf("EPG URL must start with http or https")
 	}
 
 	// Fetch channels for matching
-	rows, err := database.DB.Query("SELECT id, name FROM channels")
+	rows, err := database.DB.Query("SELECT id, name, channel_number FROM channels")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
 	channelMap := make(map[string]string)
+	numberMap := make(map[string]string)
 	for rows.Next() {
 		var id, name string
-		if err := rows.Scan(&id, &name); err == nil {
+		var chno int
+		if err := rows.Scan(&id, &name, &chno); err == nil {
 			channelMap[strings.ToLower(name)] = id
+			if chno > 0 {
+				numberMap[fmt.Sprintf("%d", chno)] = id
+			}
 		}
 	}
 
@@ -685,7 +694,7 @@ func syncEPGSource(xmltvURL string) error {
 	}
 	defer stmt.Close()
 
-	err = parser.ParseXMLTV(r, func(prog models.EPGProgram) error {
+	callback := func(prog models.EPGProgram) error {
 		epgChanID := strings.ToLower(prog.ChannelID)
 		var matchedChanID string
 
@@ -698,6 +707,14 @@ func syncEPGSource(xmltvURL string) error {
 					break
 				}
 			}
+			if matchedChanID == "" {
+				for num, id := range numberMap {
+					if strings.HasPrefix(epgChanID, num+".") || epgChanID == num {
+						matchedChanID = id
+						break
+					}
+				}
+			}
 		}
 
 		if matchedChanID != "" {
@@ -707,7 +724,15 @@ func syncEPGSource(xmltvURL string) error {
 		}
 
 		return nil
-	})
+	}
+
+	if isHDHomeRunAuto {
+		var hdhrIP string
+		_ = database.DB.QueryRow("SELECT url_path FROM playlists WHERE type = 'HDHOMERUN' LIMIT 1").Scan(&hdhrIP)
+		err = parser.FetchHDHomeRunEPG(hdhrIP, callback)
+	} else {
+		err = parser.ParseXMLTV(r, callback)
+	}
 
 	if err != nil {
 		return err

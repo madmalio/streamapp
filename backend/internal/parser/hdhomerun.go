@@ -1,8 +1,10 @@
 package parser
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +19,7 @@ type HDHomeRunDevice struct {
 	LocalIP     string `json:"LocalIP"`
 	DiscoverURL string `json:"DiscoverURL"`
 	LineupURL   string `json:"LineupURL"`
+	DeviceAuth  string `json:"DeviceAuth"`
 }
 
 // HDHomeRunChannel represents a channel stream configuration in tuner lineups.
@@ -94,4 +97,76 @@ func FetchHDHomeRunChannels(ipOrLineupURL string) ([]models.Channel, error) {
 	}
 
 	return channels, nil
+}
+
+// FetchHDHomeRunEPG discovers a local tuner, extracts its DeviceAuth, and downloads the XMLTV from SiliconDust.
+func FetchHDHomeRunEPG(ipOrDiscoverURL string, callback func(prog models.EPGProgram) error) error {
+	var discoverURL string
+	if ipOrDiscoverURL == "" {
+		devices, err := DiscoverHDHomeRun()
+		if err != nil {
+			return fmt.Errorf("failed to discover HDHomeRun: %w", err)
+		}
+		if len(devices) == 0 {
+			return fmt.Errorf("no HDHomeRun devices found on network")
+		}
+		discoverURL = devices[0].DiscoverURL
+	} else if strings.HasSuffix(ipOrDiscoverURL, "/discover.json") {
+		discoverURL = ipOrDiscoverURL
+	} else {
+		ip := strings.TrimPrefix(strings.TrimPrefix(ipOrDiscoverURL, "http://"), "https://")
+		ip = strings.TrimSuffix(ip, "/")
+		discoverURL = fmt.Sprintf("http://%s/discover.json", ip)
+	}
+
+	// Step 1: Hit the local discover.json for the first tuner to get DeviceAuth
+	client := &http.Client{Timeout: 5 * time.Second}
+	respLocal, err := client.Get(discoverURL)
+	if err != nil {
+		return fmt.Errorf("failed to contact local device %s: %w", discoverURL, err)
+	}
+	defer respLocal.Body.Close()
+
+	var localDev HDHomeRunDevice
+	if err := json.NewDecoder(respLocal.Body).Decode(&localDev); err != nil {
+		return fmt.Errorf("failed to decode local discover.json: %w", err)
+	}
+
+	if localDev.DeviceAuth == "" {
+		return fmt.Errorf("no DeviceAuth found from local device (ensure tuner is connected to internet)")
+	}
+
+	// Step 2: Fetch the XMLTV guide from SiliconDust cloud API
+	epgURL := fmt.Sprintf("https://api.hdhomerun.com/api/xmltv?DeviceAuth=%s", localDev.DeviceAuth)
+	req, err := http.NewRequest("GET", epgURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create EPG request: %w", err)
+	}
+	// The SiliconDust XMLTV is large and typically gzipped
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	// Use a longer timeout for downloading the large guide file
+	clientEPG := &http.Client{Timeout: 60 * time.Second}
+	respEPG, err := clientEPG.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to download EPG from SiliconDust: %w", err)
+	}
+	defer respEPG.Body.Close()
+
+	if respEPG.StatusCode != http.StatusOK {
+		return fmt.Errorf("SiliconDust EPG API returned status: %d", respEPG.StatusCode)
+	}
+
+	// Step 3: Decompress if necessary
+	var reader io.Reader = respEPG.Body
+	if respEPG.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(respEPG.Body)
+		if err != nil {
+			return fmt.Errorf("failed to create gzip reader: %w", err)
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	
+	return ParseXMLTV(reader, callback)
 }

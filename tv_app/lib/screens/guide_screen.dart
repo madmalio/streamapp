@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'dart:async';
+import 'dart:ui';
 import '../models/channel.dart';
+import '../models/epg_program.dart';
 import '../services/api_service.dart';
 import 'player_screen.dart';
 import 'settings_screen.dart';
@@ -19,7 +21,11 @@ class _GuideScreenState extends State<GuideScreen> {
   static const String _gstTestUrl = 'http://192.168.4.143:8090/stream.m3u8';
 
   List<Channel> _channels = [];
+  Map<String, ChannelEPG> _epgData = {};
+  Channel? _focusedChannel;
+  EPGProgram? _focusedProgram;
   bool _isLoading = true;
+  int _currentTabIndex = 0; // 0 = Channels, 1 = Guide
   Timer? _prewarmTimer;
   String? _lastPrewarmedKey;
   String? _activePrewarmSessionId;
@@ -50,8 +56,20 @@ class _GuideScreenState extends State<GuideScreen> {
     try {
       final api = Provider.of<ApiService>(context, listen: false);
       final channels = await api.getChannels();
+      Map<String, ChannelEPG> epg = {};
+      try {
+        epg = await api.getLiveEpg();
+      } catch (_) {
+        // EPG might not be synced yet
+      }
+
       setState(() {
         _channels = channels;
+        _epgData = epg;
+        if (_channels.isNotEmpty && _focusedChannel == null) {
+          _focusedChannel = _channels.first;
+          _focusedProgram = _epgData[_channels.first.id.toLowerCase()]?.currentProgram;
+        }
         _isLoading = false;
       });
     } catch (e) {
@@ -60,17 +78,25 @@ class _GuideScreenState extends State<GuideScreen> {
     }
   }
 
-  void _schedulePrewarm(Channel channel) {
-    if (!_prewarmEnabled) {
-      return;
+  void _onChannelFocus(Channel channel, {EPGProgram? program}) {
+    if (_focusedChannel?.id != channel.id || _focusedProgram?.id != program?.id) {
+      setState(() {
+        _focusedChannel = channel;
+        _focusedProgram = program;
+      });
     }
+    if (_prewarmEnabled) {
+      _schedulePrewarm(channel);
+    }
+  }
+
+  void _schedulePrewarm(Channel channel) {
+    if (!_prewarmEnabled) return;
 
     _prewarmTimer?.cancel();
     final token = ++_prewarmToken;
     _prewarmTimer = Timer(const Duration(milliseconds: 2200), () async {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       final now = DateTime.now();
       if (_lastPrewarmAt != null && now.difference(_lastPrewarmAt!) < const Duration(seconds: 4)) {
@@ -80,9 +106,7 @@ class _GuideScreenState extends State<GuideScreen> {
       final api = Provider.of<ApiService>(context, listen: false);
       final recommended = await api.getRecommendedBitrate(forceRefresh: false, fallbackOnUnknown: true);
       final key = '${channel.streamUrl}|$recommended';
-      if (_lastPrewarmedKey == key) {
-        return;
-      }
+      if (_lastPrewarmedKey == key) return;
 
       // Free tuner from prior prewarm before requesting another channel.
       final previousSessionId = _activePrewarmSessionId;
@@ -94,9 +118,7 @@ class _GuideScreenState extends State<GuideScreen> {
       _lastPrewarmedKey = key;
 
       final session = await api.prewarmHlsStream(channel.streamUrl, bitrate: recommended);
-      if (session == null) {
-        return;
-      }
+      if (session == null) return;
 
       if (!mounted || token != _prewarmToken) {
         unawaited(api.stopStream(session.sessionId));
@@ -111,9 +133,7 @@ class _GuideScreenState extends State<GuideScreen> {
   Future<void> _releaseActivePrewarm() async {
     final sessionId = _activePrewarmSessionId;
     _activePrewarmSessionId = null;
-    if (sessionId == null) {
-      return;
-    }
+    if (sessionId == null) return;
 
     try {
       final api = Provider.of<ApiService>(context, listen: false);
@@ -126,9 +146,7 @@ class _GuideScreenState extends State<GuideScreen> {
     // PlayerScreen will adopt the exact same HLS Session ID from the backend.
     _prewarmTimer?.cancel();
     
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
 
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -166,7 +184,6 @@ class _GuideScreenState extends State<GuideScreen> {
       return;
     }
     
-    // The user requested we test channel 7.1 specifically, because some other channels are broken.
     Channel targetChannel = _channels.first;
     for (var ch in _channels) {
       if (ch.streamUrl.contains('v7.1')) {
@@ -206,95 +223,341 @@ class _GuideScreenState extends State<GuideScreen> {
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Row(
-        children: [
-          // Sidebar
-          Container(
-            width: 80,
-            color: const Color(0xFF1A1A1A),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+  Widget _buildFeaturedHero(Channel channel) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 600),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      child: Container(
+        key: ValueKey(channel.id),
+        height: 340, // Slightly more compact hero
+        width: double.infinity,
+        margin: const EdgeInsets.only(bottom: 30, right: 40), 
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(24),
+          color: const Color(0xFF151515),
+          image: DecorationImage(
+            image: const NetworkImage('https://images.unsplash.com/photo-1616469829581-73993eb86b02?q=80&w=2070'),
+            fit: BoxFit.cover,
+            colorFilter: ColorFilter.mode(Colors.black.withOpacity(0.4), BlendMode.darken),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.6),
+              blurRadius: 40,
+              offset: const Offset(0, 15),
+            )
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(24),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
+            child: Container(
+              padding: const EdgeInsets.all(40),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    const Color(0xFF0F0F0F).withOpacity(0.9), 
+                    Colors.transparent,
+                  ],
+                  begin: Alignment.bottomLeft,
+                  end: Alignment.topRight,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent.withOpacity(0.8),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text(
+                      'LIVE NOW',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    _focusedProgram?.title ?? channel.name,
+                    style: const TextStyle(
+                      fontSize: 48,
+                      fontWeight: FontWeight.w900,
+                      color: Colors.white,
+                      letterSpacing: -0.5,
+                      shadows: [Shadow(color: Colors.black54, blurRadius: 10, offset: Offset(0, 4))],
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _focusedProgram?.description ?? 'HDHomeRun Network Broadcast',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      color: Colors.white70,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 15),
+                  Row(
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: () => _openChannel(channel),
+                        icon: const Icon(Icons.play_arrow, color: Colors.black, size: 24),
+                        label: const Text('Play Stream', style: TextStyle(color: Colors.black, fontSize: 16, fontWeight: FontWeight.bold)),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+                          elevation: 10,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildChannelRow(String title, List<Channel> rowChannels) {
+    if (rowChannels.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 10, bottom: 10),
+          child: Text(
+            title,
+            style: const TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ),
+        SizedBox(
+          height: 130, // Compact height like Google TV
+          child: ListView.builder(
+            clipBehavior: Clip.none,
+            scrollDirection: Axis.horizontal,
+            itemCount: rowChannels.length,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            itemBuilder: (context, index) {
+              final chan = rowChannels[index];
+              return Padding(
+                padding: const EdgeInsets.only(right: 20, top: 5, bottom: 10),
+                child: SizedBox(
+                  width: 200, // Compact width to fit many channels on screen
+                  child: ChannelCard(
+                    channel: chan,
+                    onFocus: (c) => _onChannelFocus(c, program: _epgData[c.id.toLowerCase()]?.currentProgram),
+                    onPlay: _openChannel,
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 10),
+      ],
+    );
+  }
+
+  Widget _buildEpgGrid(String title, List<Channel> gridChannels) {
+    if (gridChannels.isEmpty) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 10, bottom: 10),
+          child: Text(
+            title,
+            style: const TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ),
+        ...gridChannels.map((chan) {
+          final epg = _epgData[chan.id.toLowerCase()];
+          return Container(
+            height: 90,
+            margin: const EdgeInsets.only(bottom: 12, left: 10, right: 10),
+            child: Row(
               children: [
-                const Icon(Icons.tv, size: 32, color: Colors.white),
-                const SizedBox(height: 40),
-                const Icon(Icons.list, size: 32, color: Colors.blueAccent),
-                const SizedBox(height: 40),
-                IconButton(
-                  icon: const Icon(Icons.settings, size: 32, color: Colors.white54),
-                  tooltip: 'Settings',
-                  onPressed: () async {
-                    final changed = await Navigator.push<bool>(
-                      context,
-                      MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                    );
-                    if (changed == true && mounted) {
-                      await _loadChannels();
-                    }
-                  },
+                // Channel ID / Logo Block
+                Container(
+                  width: 140,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1A1A1A),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Center(
+                    child: Text(
+                      chan.name,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                
+                // Now Playing
+                Expanded(
+                  flex: 3,
+                  child: epg?.currentProgram != null 
+                    ? EpgProgramBlock(
+                        program: epg!.currentProgram!,
+                        channel: chan,
+                        isNowPlaying: true,
+                        onFocus: _onChannelFocus,
+                        onPlay: () => _openChannel(chan),
+                      )
+                    : EpgProgramBlock(
+                        program: EPGProgram(id: '', channelId: chan.id, title: 'No EPG Data', description: '', startTime: DateTime.now(), endTime: DateTime.now().add(const Duration(hours: 1))),
+                        channel: chan,
+                        isNowPlaying: true,
+                        onFocus: _onChannelFocus,
+                        onPlay: () => _openChannel(chan),
+                      ),
+                ),
+                const SizedBox(width: 12),
+
+                // Next Playing
+                Expanded(
+                  flex: 2,
+                  child: epg?.nextProgram != null 
+                    ? EpgProgramBlock(
+                        program: epg!.nextProgram!,
+                        channel: chan,
+                        isNowPlaying: false,
+                        onFocus: _onChannelFocus,
+                        onPlay: () => _openChannel(chan),
+                      )
+                    : Container(
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF121212),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
                 ),
               ],
             ),
-          ),
-          // Main Content
-          Expanded(
+          );
+        }),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasFavorites = _channels.any((c) => c.isFavorite);
+    
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F0F0F),
+      body: Stack(
+        children: [
+          // Main Content Area (Positioned behind the sidebar)
+          Positioned(
+            left: 80, // Offset by sidebar width
+            right: 0,
+            top: 0,
+            bottom: 0,
             child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
+                ? const Center(child: CircularProgressIndicator(color: Colors.blueAccent))
                 : Padding(
-                    padding: const EdgeInsets.all(40.0),
+                    padding: const EdgeInsets.only(top: 30.0, left: 40.0, right: 0, bottom: 20.0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
-                          children: [
-                            const Expanded(
-                              child: Text(
-                                'Live Guide',
-                                style: TextStyle(
-                                  fontSize: 36,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
-                            ElevatedButton.icon(
-                              onPressed: _openSrtTestStream,
-                              icon: const Icon(Icons.speed),
-                              label: const Text('SRT Test'),
-                              style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
-                            ),
-                            const SizedBox(width: 10),
-                            ElevatedButton.icon(
-                              onPressed: _openGstTestStream,
-                              icon: const Icon(Icons.science),
-                              label: const Text('GStreamer Test'),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 30),
                         Expanded(
-                          child: GridView.builder(
-                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 3,
-                              childAspectRatio: 2.5,
-                              crossAxisSpacing: 20,
-                              mainAxisSpacing: 20,
+                          child: SingleChildScrollView(
+                            clipBehavior: Clip.none,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (_focusedChannel != null) _buildFeaturedHero(_focusedChannel!),
+                                if (_currentTabIndex == 0) ...[
+                                  if (hasFavorites)
+                                    _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
+                                  _buildChannelRow('All Channels', _channels),
+                                ] else if (_currentTabIndex == 1) ...[
+                                  if (hasFavorites)
+                                    _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
+                                  _buildEpgGrid('Live TV Guide', _channels),
+                                ],
+                                const SizedBox(height: 40), // Extra padding at very bottom of scroll
+                              ],
                             ),
-                            itemCount: _channels.length,
-                            itemBuilder: (context, index) {
-                              return ChannelCard(
-                                channel: _channels[index],
-                                onFocus: _prewarmEnabled ? _schedulePrewarm : null,
-                                onPlay: _openChannel,
-                              );
-                            },
                           ),
                         ),
                       ],
                     ),
                   ),
+          ),
+          
+          // Sleek Sidebar (Painted ON TOP of everything else)
+          Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 80,
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF151515),
+                border: Border(right: BorderSide(color: Colors.white.withOpacity(0.05))),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.5),
+                    blurRadius: 20,
+                    offset: const Offset(5, 0),
+                  )
+                ],
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.grid_view_rounded, size: 32, color: _currentTabIndex == 0 ? Colors.blueAccent : Colors.white54),
+                    tooltip: 'Channels',
+                    onPressed: () => setState(() => _currentTabIndex = 0),
+                  ),
+                  const SizedBox(height: 50),
+                  IconButton(
+                    icon: Icon(Icons.view_list_rounded, size: 32, color: _currentTabIndex == 1 ? Colors.blueAccent : Colors.white54),
+                    tooltip: 'Live Guide',
+                    onPressed: () => setState(() => _currentTabIndex = 1),
+                  ),
+                  const SizedBox(height: 50),
+                  IconButton(
+                    icon: const Icon(Icons.settings, size: 32, color: Colors.white54),
+                    tooltip: 'Settings',
+                    onPressed: () async {
+                      final changed = await Navigator.push<bool>(
+                        context,
+                        MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                      );
+                      if (changed == true && mounted) {
+                        await _loadChannels();
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ),
           ),
         ],
       ),
@@ -324,6 +587,8 @@ class _ChannelCardState extends State<ChannelCard> {
 
   @override
   Widget build(BuildContext context) {
+    final active = _isFocused || _isHovered;
+
     return Focus(
       onFocusChange: (hasFocus) {
         setState(() => _isFocused = hasFocus);
@@ -340,33 +605,60 @@ class _ChannelCardState extends State<ChannelCard> {
         return KeyEventResult.ignored;
       },
       child: MouseRegion(
-        onEnter: (_) {
-          setState(() => _isHovered = true);
-        },
+        onEnter: (_) => setState(() => _isHovered = true),
         onExit: (_) => setState(() => _isHovered = false),
         child: GestureDetector(
           onTap: _playChannel,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            decoration: BoxDecoration(
-              color: (_isFocused || _isHovered) ? Colors.blueAccent : const Color(0xFF222222),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: (_isFocused || _isHovered) ? Colors.white : Colors.transparent,
-                width: 2,
-              ),
-              boxShadow: (_isFocused || _isHovered)
-                  ? [BoxShadow(color: Colors.blueAccent.withOpacity(0.5), blurRadius: 20, spreadRadius: 5)]
-                  : [],
-            ),
-            child: Center(
-              child: Text(
-                widget.channel.name,
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: (_isFocused || _isHovered) ? Colors.white : Colors.white70,
+          child: AnimatedScale(
+            scale: active ? 1.05 : 1.0,
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeOutCubic,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              curve: Curves.easeOutCubic,
+              decoration: BoxDecoration(
+                color: active ? const Color(0xFF252525) : const Color(0xFF1A1A1A),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: active ? Colors.blueAccent.withOpacity(0.8) : Colors.white.withOpacity(0.05),
+                  width: active ? 2 : 1,
                 ),
+                boxShadow: active
+                    ? [
+                        BoxShadow(
+                          color: Colors.blueAccent.withOpacity(0.3),
+                          blurRadius: 20,
+                          offset: const Offset(0, 8),
+                        )
+                      ]
+                    : [],
+              ),
+              child: Stack(
+                children: [
+                  // Glassmorphism highlight
+                  Positioned.fill(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(14),
+                        gradient: LinearGradient(
+                          colors: [Colors.white.withOpacity(0.08), Colors.transparent],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                      ),
+                    ),
+                  ),
+                  Center(
+                    child: Text(
+                      widget.channel.name,
+                      style: TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.bold,
+                        color: active ? Colors.white : Colors.white70,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -384,6 +676,109 @@ class _ChannelCardState extends State<ChannelCard> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => PlayerScreen(channel: widget.channel, streamUrl: widget.channel.streamUrl),
+      ),
+    );
+  }
+}
+
+class EpgProgramBlock extends StatefulWidget {
+  final EPGProgram program;
+  final Channel channel;
+  final bool isNowPlaying;
+  final void Function(Channel, {EPGProgram? program}) onFocus;
+  final VoidCallback onPlay;
+
+  const EpgProgramBlock({
+    super.key,
+    required this.program,
+    required this.channel,
+    required this.isNowPlaying,
+    required this.onFocus,
+    required this.onPlay,
+  });
+
+  @override
+  State<EpgProgramBlock> createState() => _EpgProgramBlockState();
+}
+
+class _EpgProgramBlockState extends State<EpgProgramBlock> {
+  bool _isFocused = false;
+  bool _isHovered = false;
+
+  String _formatTime(DateTime time) {
+    final hour = time.hour > 12 ? time.hour - 12 : (time.hour == 0 ? 12 : time.hour);
+    final min = time.minute.toString().padLeft(2, '0');
+    final ampm = time.hour >= 12 ? 'PM' : 'AM';
+    return '$hour:$min $ampm';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final active = _isFocused || _isHovered;
+
+    return Focus(
+      onFocusChange: (hasFocus) {
+        setState(() => _isFocused = hasFocus);
+        if (hasFocus) {
+          widget.onFocus(widget.channel, program: widget.program);
+        }
+      },
+      onKeyEvent: (node, event) {
+        if (event is KeyDownEvent && 
+            (event.logicalKey == LogicalKeyboardKey.enter || event.logicalKey == LogicalKeyboardKey.select)) {
+          widget.onPlay();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _isHovered = true),
+        onExit: (_) => setState(() => _isHovered = false),
+        child: GestureDetector(
+          onTap: widget.onPlay,
+          child: AnimatedScale(
+            scale: active ? 1.02 : 1.0,
+            duration: const Duration(milliseconds: 200),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: active 
+                  ? Colors.blueAccent.withOpacity(0.9)
+                  : (widget.isNowPlaying ? const Color(0xFF2A2A2A) : const Color(0xFF1E1E1E)),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: active ? Colors.white : Colors.white.withOpacity(0.05),
+                  width: active ? 2 : 1,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    widget.program.title,
+                    style: TextStyle(
+                      color: active ? Colors.white : Colors.white.withOpacity(0.9),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${_formatTime(widget.program.startTime)} - ${_formatTime(widget.program.endTime)}',
+                    style: TextStyle(
+                      color: active ? Colors.white70 : Colors.white54,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

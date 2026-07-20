@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -86,23 +87,43 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> _openAndForcePlay(String url) async {
     if (player == null) return;
-    await player!.open(Media(url), play: true);
-    await player!.play();
-
-    unawaited(
-      Future<void>.delayed(const Duration(milliseconds: 350), () async {
-        if (mounted && player != null && !player!.state.playing) {
+    
+    final isTranscodedHls = url.contains('.m3u8');
+    
+    // For transcoded HLS streams, we open them paused so the player caches data ahead
+    // of the playhead. This ensures a thick buffer before playback begins.
+    await player!.open(Media(url), play: !isTranscodedHls);
+    
+    if (isTranscodedHls) {
+      // Build a 2.5-second deep buffer of LL-HLS chunks before starting the playhead
+      await Future<void>.delayed(const Duration(milliseconds: 2500));
+      if (mounted && player != null && player!.platform != null) {
+        try {
           await player!.play();
-        }
-      }),
-    );
-    unawaited(
-      Future<void>.delayed(const Duration(milliseconds: 900), () async {
-        if (mounted && player != null && !player!.state.playing) {
+        } catch (_) {}
+      }
+    } else {
+      // For Original streams (SRT/Direct HTTP), play immediately and aggressively
+      if (mounted && player != null && player!.platform != null) {
+        try {
           await player!.play();
-        }
-      }),
-    );
+        } catch (_) {}
+      }
+      unawaited(
+        Future<void>.delayed(const Duration(milliseconds: 350), () async {
+          if (mounted && player != null && player!.platform != null && !player!.state.playing) {
+            try { await player!.play(); } catch (_) {}
+          }
+        }),
+      );
+      unawaited(
+        Future<void>.delayed(const Duration(milliseconds: 900), () async {
+          if (mounted && player != null && player!.platform != null && !player!.state.playing) {
+            try { await player!.play(); } catch (_) {}
+          }
+        }),
+      );
+    }
   }
 
   Future<void> _initPlayer() async {
@@ -126,14 +147,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (player?.platform is! NativePlayer) return;
       final nativePlayer = player!.platform as NativePlayer;
 
-      await nativePlayer.setProperty('profile', 'low-latency');
-      await nativePlayer.setProperty('cache', 'no');
+      // Re-enable the cache to allow the player to build up a buffer ahead of time.
+      // This adds a slight delay to the stream but drastically reduces buffering stalls.
+      await nativePlayer.setProperty('cache', 'yes');
+      await nativePlayer.setProperty('demuxer-max-bytes', '32M');
+      await nativePlayer.setProperty('demuxer-max-back-bytes', '16M');
+      await nativePlayer.setProperty('demuxer-readahead-secs', '4');
+      
       await nativePlayer.setProperty('video-sync', 'audio');
-      await nativePlayer.setProperty('untimed', 'yes');
       await nativePlayer.setProperty('hwdec', 'auto');
-      await nativePlayer.setProperty('network-timeout', '5');
+      await nativePlayer.setProperty('network-timeout', '10');
     } catch (e) {
-      debugPrint('Low-latency profile parameters not applied: $e');
+      debugPrint('Player parameters not applied: $e');
     }
   }
 
@@ -351,171 +376,148 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await _changeQuality(bitrate, preferFastSwitch: true);
   }
 
-  @override
-  void dispose() {
-    _volumeSubscription?.cancel();
-    _stopWebRTC();
-    try {
-      final sessionId = _activeHlsSessionId;
-      if (sessionId != null) {
-        unawaited(_api.stopStream(sessionId));
-      }
-    } catch (_) {}
-
-    player?.dispose();
-    super.dispose();
+  Widget _buildQualityMenu() {
+    return IconButton(
+      icon: const Icon(Icons.settings, color: Colors.white),
+      tooltip: 'Quality',
+      onPressed: () {
+        showModalBottomSheet(
+          context: context,
+          backgroundColor: Colors.transparent,
+          builder: (context) {
+            return Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Material(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: BorderRadius.circular(16),
+                clipBehavior: Clip.antiAlias,
+                child: Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.white.withOpacity(0.1)),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.all(16.0),
+                    child: Text(
+                      'Stream Quality',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  const Divider(color: Colors.white24, height: 1),
+                  Expanded(
+                    child: ListView(
+                      shrinkWrap: true,
+                      children: _qualityOptions.map((value) {
+                        String text = value == 'Original'
+                            ? 'Original (Direct)'
+                            : '${value.replaceAll('M', '')} Mbps';
+                        if (value == 'Auto') text = 'Auto';
+                        else if (value == 'Original HLS') text = 'Original (HLS)';
+                        
+                        return ListTile(
+                          leading: Icon(
+                            _currentBitrate == value ? Icons.check_circle : Icons.circle_outlined,
+                            color: _currentBitrate == value ? Colors.blueAccent : Colors.white54,
+                          ),
+                          title: Text(
+                            text,
+                            style: TextStyle(
+                              color: _currentBitrate == value ? Colors.blueAccent : Colors.white,
+                              fontWeight: _currentBitrate == value ? FontWeight.bold : FontWeight.normal,
+                            ),
+                          ),
+                          onTap: () {
+                            Navigator.pop(context);
+                            _onQualitySelected(value);
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            ),
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Focus(
-        autofocus: true,
-        onKeyEvent: (node, event) {
-          if (event is KeyDownEvent &&
-              (event.logicalKey == LogicalKeyboardKey.escape ||
-                  event.logicalKey == LogicalKeyboardKey.browserBack)) {
-            Navigator.pop(context);
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        },
-        child: Stack(
-          children: [
-            Center(
-              child: _currentBitrate == 'WebRTC' && _webrtcRenderer != null
-                  ? RTCVideoView(_webrtcRenderer!)
-                  : MaterialDesktopVideoControlsTheme(
-                      normal: MaterialDesktopVideoControlsThemeData(
-                        bottomButtonBar: [
-                          const MaterialPlayOrPauseButton(),
-                          const MaterialPositionIndicator(),
-                          const Spacer(),
-                          const MaterialDesktopVolumeButton(),
-                          const MaterialDesktopFullscreenButton(),
-                        ],
-                      ),
-                      fullscreen: MaterialDesktopVideoControlsThemeData(
-                        bottomButtonBar: [
-                          const MaterialPlayOrPauseButton(),
-                          const MaterialPositionIndicator(),
-                          const Spacer(),
-                          const MaterialDesktopVolumeButton(),
-                          const MaterialDesktopFullscreenButton(),
-                        ],
-                      ),
+    return WillPopScope(
+      onWillPop: () async {
+        // 1. Immediately cut audio/video playback
+        try {
+          await player?.stop();
+        } catch (_) {}
+        
+        final sessionId = _activeHlsSessionId;
+        if (sessionId != null) {
+          _activeHlsSessionId = null; // Prevent double-fire in dispose
+          try {
+            await _api.stopStream(sessionId);
+          } catch (_) {}
+        }
+        return true;
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Focus(
+          autofocus: true,
+          onKeyEvent: (node, event) {
+            if (event is KeyDownEvent &&
+                (event.logicalKey == LogicalKeyboardKey.escape ||
+                    event.logicalKey == LogicalKeyboardKey.browserBack)) {
+              Navigator.maybePop(context);
+              return KeyEventResult.handled;
+            }
+            return KeyEventResult.ignored;
+          },
+          child: Stack(
+            children: [
+              Center(
+                child: _currentBitrate == 'WebRTC' && _webrtcRenderer != null
+                    ? RTCVideoView(_webrtcRenderer!)
+                    : MaterialDesktopVideoControlsTheme(
+                        normal: MaterialDesktopVideoControlsThemeData(
+                          bottomButtonBar: [
+                            const MaterialPlayOrPauseButton(),
+                            const MaterialPositionIndicator(),
+                            const Spacer(),
+                            const MaterialDesktopVolumeButton(),
+                            _buildQualityMenu(),
+                            const MaterialDesktopFullscreenButton(),
+                          ],
+                        ),
+                        fullscreen: MaterialDesktopVideoControlsThemeData(
+                          bottomButtonBar: [
+                            const MaterialPlayOrPauseButton(),
+                            const MaterialPositionIndicator(),
+                            const Spacer(),
+                            const MaterialDesktopVolumeButton(),
+                            _buildQualityMenu(),
+                            const MaterialDesktopFullscreenButton(),
+                          ],
+                        ),
                       child: controller != null
                           ? Video(controller: controller!)
                           : const SizedBox(),
                     ),
             ),
-            // Channel Info Overlay
-            Positioned(
-              top: 40,
-              left: 40,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.7),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      widget.channel.name,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    Text(
-                      'Quality: $_currentBitrate',
-                      style: const TextStyle(color: Colors.grey, fontSize: 16),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            // Quality & Engine Selector Overlay (Top Right)
-            Positioned(
-              top: 40,
-              right: 40,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextButton.icon(
-                    onPressed: _toggleEngine,
-                    icon: Icon(
-                      _currentEngine == 'gstreamer'
-                          ? Icons.science
-                          : Icons.videocam,
-                      color: Colors.white,
-                      size: 20,
-                    ),
-                    label: Text(
-                      _currentEngine == 'gstreamer' ? 'GStreamer' : 'FFmpeg',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    style: TextButton.styleFrom(
-                      backgroundColor: Colors.black54,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
-                        side: const BorderSide(color: Colors.white30),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  PopupMenuButton<String>(
-                    icon: const Icon(
-                      Icons.settings,
-                      color: Colors.white,
-                      size: 32,
-                    ),
-                    color: Colors.black87,
-                    tooltip: 'Quality',
-                    onSelected: _onQualitySelected,
-                    itemBuilder: (context) => _qualityOptions.map((value) {
-                      String text = value == 'Original'
-                          ? 'Original (Direct)'
-                          : '${value.replaceAll('M', '')} Mbps';
-                      if (value == 'Auto') {
-                        text = 'Auto';
-                      } else if (value == 'Original HLS') {
-                        text = 'Original (HLS)';
-                      }
-                      return PopupMenuItem(
-                        value: value,
-                        child: Text(
-                          text,
-                          style: TextStyle(
-                            color: _currentBitrate == value
-                                ? Colors.blue
-                                : Colors.white,
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                ],
-              ),
-            ),
           ],
         ),
       ),
+    ),
     );
   }
 }

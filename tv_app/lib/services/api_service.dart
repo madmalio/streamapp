@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/channel.dart';
+import '../models/epg_program.dart';
 
 class HlsStreamSession {
   final String url;
@@ -64,6 +65,44 @@ class ApiService {
       return json.map((ch) => Channel.fromJson(ch)).toList();
     } else {
       throw Exception('Failed to load channels');
+    }
+  }
+
+  Future<void> addPlaylist({required String name, required String urlPath, required String type}) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/playlists'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'name': name,
+        'url_path': urlPath,
+        'type': type,
+      }),
+    ).timeout(const Duration(seconds: 30));
+
+    if (response.statusCode != 201 && response.statusCode != 200) {
+      throw Exception('Failed to add playlist: ${response.body}');
+    }
+  }
+
+  Future<void> syncEpg(String epgUrl) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/epg/sync'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'url': epgUrl}),
+    ).timeout(const Duration(seconds: 30));
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to sync EPG: ${response.body}');
+    }
+  }
+
+  Future<Map<String, ChannelEPG>> getLiveEpg() async {
+    final response = await http.get(Uri.parse('$baseUrl/epg/live')).timeout(const Duration(seconds: 10));
+    if (response.statusCode == 200) {
+      final Map<String, dynamic> json = jsonDecode(response.body);
+      return json.map((key, value) => MapEntry(key, ChannelEPG.fromJson(value)));
+    } else {
+      throw Exception('Failed to load live EPG: ${response.body}');
     }
   }
 

@@ -6,21 +6,26 @@ class AppSettings extends ChangeNotifier {
     required String initialBaseUrl,
     required String initialStreamingEngine,
     required String initialDefaultQuality,
+    required String initialEpgUrl,
   })  : _baseUrl = initialBaseUrl,
         _streamingEngine = initialStreamingEngine,
-        _defaultQuality = initialDefaultQuality;
+        _defaultQuality = initialDefaultQuality,
+        _epgUrl = initialEpgUrl;
 
   static const String apiBaseUrlKey = 'api_base_url';
   static const String streamingEngineKey = 'streaming_engine';
   static const String defaultQualityKey = 'default_quality';
+  static const String epgUrlKey = 'epg_url';
 
   String _baseUrl;
   String _streamingEngine;
   String _defaultQuality;
+  String _epgUrl;
 
   String get baseUrl => _baseUrl;
   String get streamingEngine => _streamingEngine;
   String get defaultQuality => _defaultQuality;
+  String get epgUrl => _epgUrl;
 
   Future<void> setBaseUrl(String value) async {
     final normalized = value.trim();
@@ -58,6 +63,18 @@ class AppSettings extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(defaultQualityKey, normalized);
     _defaultQuality = normalized;
+    notifyListeners();
+  }
+
+  Future<void> setEpgUrl(String value) async {
+    final normalized = value.trim();
+    if (normalized == _epgUrl) {
+      return;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(epgUrlKey, normalized);
+    _epgUrl = normalized;
     notifyListeners();
   }
 
