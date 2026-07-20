@@ -937,7 +937,7 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 			"-map", "0:v:0",
 			"-map", "0:a:0?",
 			"-sn",
-			"-vf", "sidedata=mode=delete,format=nv12,hwupload",
+			"-vf", "sidedata=mode=delete,format=nv12,hwupload,deinterlace_vaapi=rate=frame:auto=1",
 			"-c:v", "h264_vaapi",
 			"-profile:v", "main",
 			"-b:v", bitrate,
