@@ -575,7 +575,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       ),
                       padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
                       child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
                           // Channel Logo
                           if (widget.channel.logoUrl.isNotEmpty)
