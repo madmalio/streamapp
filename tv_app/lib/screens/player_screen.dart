@@ -595,21 +595,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           
                           // Program Info
                           Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  _currentProgram?.title ?? widget.channel.name,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 24,
-                                    fontWeight: FontWeight.bold,
-                                    shadows: [Shadow(color: Colors.black, blurRadius: 4)],
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
+                            child: Text(
+                              _currentProgram?.title ?? widget.channel.name,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                                shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         ],
