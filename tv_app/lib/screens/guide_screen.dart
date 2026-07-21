@@ -311,16 +311,32 @@ class _GuideScreenState extends State<GuideScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.redAccent.withOpacity(0.8),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Text(
-                      'LIVE NOW',
-                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                    ),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.redAccent.withOpacity(0.8),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Text(
+                          'LIVE NOW',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                        ),
+                      ),
+                      if (channel.logoUrl.isNotEmpty) ...[
+                        const SizedBox(width: 16),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: Image.network(
+                            channel.logoUrl,
+                            height: 28,
+                            fit: BoxFit.contain,
+                            errorBuilder: (c, e, s) => const SizedBox(),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                   const SizedBox(height: 10),
                   Text(
@@ -621,13 +637,13 @@ class _GuideScreenState extends State<GuideScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        if (_focusedChannel != null) _buildFeaturedHero(_focusedChannel!),
                         Expanded(
                           child: SingleChildScrollView(
                             clipBehavior: Clip.none,
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                if (_focusedChannel != null) _buildFeaturedHero(_focusedChannel!),
                                 if (_currentTabIndex == 0) ...[
                                   if (hasFavorites)
                                     _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
