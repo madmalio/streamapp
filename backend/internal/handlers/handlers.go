@@ -327,15 +327,15 @@ func GetChannels(w http.ResponseWriter, r *http.Request) {
 		var groupIDOpt sql.NullString
 		var logoURLOpt sql.NullString
 		var guideNumOpt sql.NullString
-		var isHiddenInt sql.NullInt64
-		if err := rows.Scan(&c.ID, &groupIDOpt, &c.Name, &c.StreamURL, &logoURLOpt, &c.ChannelNumber, &guideNumOpt, &isHiddenInt); err != nil {
+		var isHiddenRaw interface{}
+		if err := rows.Scan(&c.ID, &groupIDOpt, &c.Name, &c.StreamURL, &logoURLOpt, &c.ChannelNumber, &guideNumOpt, &isHiddenRaw); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		c.GroupID = groupIDOpt.String
 		c.LogoURL = logoURLOpt.String
 		c.GuideNumber = guideNumOpt.String
-		c.IsHidden = isHiddenInt.Valid && isHiddenInt.Int64 > 0
+		c.IsHidden = parseSQLiteBool(isHiddenRaw)
 		channels = append(channels, c)
 	}
 
@@ -418,9 +418,15 @@ func UpdateChannelVisibility(w http.ResponseWriter, r *http.Request) {
 		isHiddenInt = 1
 	}
 
-	_, err := database.DB.Exec("UPDATE channels SET is_hidden = ? WHERE id = ?", isHiddenInt, chanID)
+	res, err := database.DB.Exec("UPDATE channels SET is_hidden = ? WHERE id = ?", isHiddenInt, chanID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Database error: "+err.Error())
+		return
+	}
+
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "Channel not found or stale ID")
 		return
 	}
 
@@ -548,6 +554,27 @@ func hlsBufsizeFromBitrate(bitrate string) string {
 	return fmt.Sprintf("%g%s", value*multiplier, unit)
 }
 
+func parseSQLiteBool(val interface{}) bool {
+	switch v := val.(type) {
+	case bool:
+		return v
+	case int64:
+		return v > 0
+	case int32:
+		return v > 0
+	case int:
+		return v > 0
+	case float64:
+		return v > 0
+	case []byte:
+		return string(v) == "1" || string(v) == "true"
+	case string:
+		return v == "1" || v == "true"
+	default:
+		return false
+	}
+}
+
 type chanState struct {
 	ID       string
 	LogoURL  string
@@ -565,12 +592,12 @@ func getExistingChannelState(pID string) (map[string]chanState, error) {
 	for rows.Next() {
 		var id, name string
 		var logoOpt sql.NullString
-		var isHidden sql.NullBool
-		if err := rows.Scan(&id, &name, &logoOpt, &isHidden); err == nil {
+		var isHiddenRaw interface{}
+		if err := rows.Scan(&id, &name, &logoOpt, &isHiddenRaw); err == nil {
 			state[name] = chanState{
 				ID:       id,
 				LogoURL:  logoOpt.String,
-				IsHidden: isHidden.Bool,
+				IsHidden: parseSQLiteBool(isHiddenRaw),
 			}
 		}
 	}
@@ -865,12 +892,14 @@ func syncEPGSource(xmltvURL string) error {
 					}
 				}
 				
-				// Fallback: prefix match
+				// Fallback: contains match for display name (e.g. '1.6 JTV' matching 'JTV')
 				if matchedChanID == "" {
 					for _, dn := range xmlChan.DisplayName {
-						dnLower := strings.ToLower(dn)
+						dnLower := strings.ToLower(strings.TrimSpace(dn))
 						for dbName, dbID := range channelMap {
-							if dbName != "" && len(dbName) > 3 && (strings.HasPrefix(dnLower, dbName) || strings.HasPrefix(dbName, dnLower)) {
+							if dbName == "" || len(dbName) < 2 { continue }
+							// Check if the display name contains the DB name as a distinct word
+							if strings.Contains(dnLower, dbName) || strings.Contains(dbName, dnLower) {
 								matchedChanID = dbID
 								break
 							}
@@ -882,10 +911,10 @@ func syncEPGSource(xmltvURL string) error {
 				}
 			}
 
-			// Fallback 2: Check if XML channel ID starts with DB channel name
+			// Fallback 2: Loose match on XML channel ID
 			if matchedChanID == "" {
 				for name, id := range channelMap {
-					if name != "" && len(name) > 3 && (strings.HasPrefix(epgChanID, name) || strings.HasPrefix(name, epgChanID)) {
+					if name != "" && len(name) > 2 && (strings.Contains(epgChanID, name) || strings.Contains(name, epgChanID)) {
 						matchedChanID = id
 						break
 					}
@@ -940,7 +969,7 @@ func syncEPGSource(xmltvURL string) error {
 	}
 
 	for chanID, newLogoURL := range logoMap {
-		_, _ = database.DB.Exec("UPDATE channels SET logo_url = ? WHERE id = ?", newLogoURL, chanID)
+		_, _ = tx.Exec("UPDATE channels SET logo_url = ? WHERE id = ?", newLogoURL, chanID)
 	}
 
 	err = tx.Commit()

@@ -11,4 +11,5 @@
   - `scp backend/internal/handlers/handlers.go mark@192.168.4.143:/home/mark/streamapp/backend/internal/handlers/`
   - `go build -o streamapp-backend ./cmd/server`
   - `./streamapp-backend`
-- **Go/SQLite Boolean Mapping**: When querying SQLite `INTEGER` columns that represent booleans (e.g. `is_hidden BOOLEAN DEFAULT 0`), do not use `sql.NullBool` in `rows.Scan`. Use `sql.NullInt64` and map it manually (`isHidden.Valid && isHidden.Int64 > 0`), as the `go-sqlite3` driver will silently fail or default to `false` when mapping to `sql.NullBool`.
+- **Go/SQLite Boolean Mapping**: When querying SQLite `INTEGER` columns that represent booleans (e.g. `is_hidden BOOLEAN DEFAULT 0`), do not use `sql.NullBool` or `sql.NullInt64` in `rows.Scan`. Use a generic `interface{}` and cast appropriately, as the `go-sqlite3` driver intercepts booleans and maps them to Go `bool`s unpredictably.
+- **SQLite Transaction Locking**: When holding a write transaction (`tx.Begin()`), do not execute queries using the global `database.DB` connection, as it will silently fail with a `SQLITE_BUSY` lock error. Always execute queries on the transaction (`tx.Exec`) until it is committed.

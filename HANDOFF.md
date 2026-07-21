@@ -22,13 +22,13 @@
 - Removed inline channel editing from the Guide UI to clean up the interface.
 - Added `is_hidden` column to the `channels` SQLite table.
 - Added `PUT /api/channels/{id}/visibility` API endpoint.
-- **Fixed a critical bug:** The go-sqlite3 driver silently fails to map `INTEGER` columns (used for booleans like `is_hidden`) into `sql.NullBool`. We updated `handlers.go` `GetChannels` to use `sql.NullInt64` instead and mapped it manually.
+- **Fixed multiple SQLite & driver bugs:** We migrated all boolean fetching to a generic `interface{}` scanner (`parseSQLiteBool`) to bypass unpredictable casting in `go-sqlite3`.
+- **Fixed database lock on logos:** Modified `syncEPGSource` to use `tx.Exec` when saving logos to avoid `SQLITE_BUSY` conflicts with the active EPG insertion transaction.
+- **Improved XMLTV Matching:** Modified the EPG channel matching algorithm to use fuzzy substring matches (`strings.Contains`) instead of strict prefixes so SiliconDust's EPG guides fully map to the tuner's channel names.
 
 ## Current Problem (End of Session)
-- **Deployment Handoff:** The user wants to start a new chat because the backend was updated locally, but the final `go build` and restart has not been executed on the dev-server (`192.168.4.143`). The user's Flutter app is correctly configured to hide channels, but it's hitting the old un-updated backend, which constantly tells Flutter that `is_hidden = false`. 
+- **Deployment Handoff:** The backend code has been perfected and is ready for a final push and rebuild on the user's dev-server (`192.168.4.143`).
 
 ## Next Steps (Recommended)
-1. **Verify Deployment:** The next agent needs to assist the user in deploying the recent `handlers.go` changes to the dev-server (`192.168.4.143`) and restarting the backend.
-2. **Review EPG Guide Data Bug:** Address the ongoing issue where EPG guide data is not showing up despite being successfully parsed. Verify `guide_screen.dart` rendering logic and `epg_programs` mapping in the DB.
-3. Get the user's feedback on whether the new optimized GStreamer pipeline starts up fast enough.
-4. Address any remaining custom UI overlay tasks in `player_screen.dart`.
+1. Get the user's feedback on whether the new optimized GStreamer pipeline starts up fast enough.
+2. Address any remaining custom UI overlay tasks in `player_screen.dart`.
