@@ -310,7 +310,20 @@ class _GuideScreenState extends State<GuideScreen> {
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
+                      if (channel.logoUrl.isNotEmpty) ...[
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: Image.network(
+                            channel.logoUrl,
+                            height: 32,
+                            fit: BoxFit.contain,
+                            errorBuilder: (c, e, s) => const SizedBox(),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                      ],
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                         decoration: BoxDecoration(
@@ -322,18 +335,6 @@ class _GuideScreenState extends State<GuideScreen> {
                           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
                         ),
                       ),
-                      if (channel.logoUrl.isNotEmpty) ...[
-                        const SizedBox(width: 16),
-                        ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: Image.network(
-                            channel.logoUrl,
-                            height: 28,
-                            fit: BoxFit.contain,
-                            errorBuilder: (c, e, s) => const SizedBox(),
-                          ),
-                        ),
-                      ],
                     ],
                   ),
                   const SizedBox(height: 10),
