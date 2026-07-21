@@ -272,9 +272,7 @@ class _GuideScreenState extends State<GuideScreen> {
         key: ValueKey('${channel.id}_${_focusedProgram?.id}'),
         height: 360, // Increased height to prevent overflow
         width: double.infinity,
-        margin: const EdgeInsets.only(bottom: 30, right: 40), 
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(24),
           color: const Color(0xFF151515),
           image: DecorationImage(
             image: NetworkImage((_focusedProgram?.posterUrl != null && _focusedProgram!.posterUrl.isNotEmpty)
@@ -292,7 +290,7 @@ class _GuideScreenState extends State<GuideScreen> {
           ],
         ),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.zero,
           child: BackdropFilter(
             filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
             child: Container(
@@ -632,34 +630,40 @@ class _GuideScreenState extends State<GuideScreen> {
             bottom: 0,
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator(color: Colors.blueAccent))
-                : Padding(
-                    padding: const EdgeInsets.only(top: 30.0, left: 40.0, right: 0, bottom: 20.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (_focusedChannel != null) _buildFeaturedHero(_focusedChannel!),
-                        Expanded(
-                          child: SingleChildScrollView(
-                            clipBehavior: Clip.none,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (_currentTabIndex == 0) ...[
-                                  if (hasFavorites)
-                                    _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
-                                  _buildChannelRow('All Channels', _channels),
-                                ] else if (_currentTabIndex == 1) ...[
-                                  if (hasFavorites)
-                                    _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
-                                  _buildEpgGrid('Live TV Guide', _channels),
-                                ],
-                                const SizedBox(height: 40), // Extra padding at very bottom of scroll
+                : Stack(
+                    children: [
+                      // Scrollable Guide beneath the hero
+                      Positioned.fill(
+                        child: SingleChildScrollView(
+                          padding: const EdgeInsets.only(top: 380.0, left: 40.0, right: 0, bottom: 20.0), // padding matches hero height
+                          clipBehavior: Clip.none,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (_currentTabIndex == 0) ...[
+                                if (hasFavorites)
+                                  _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
+                                _buildChannelRow('All Channels', _channels),
+                              ] else if (_currentTabIndex == 1) ...[
+                                if (hasFavorites)
+                                  _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
+                                _buildEpgGrid('Live TV Guide', _channels),
                               ],
-                            ),
+                              const SizedBox(height: 40), // Extra padding at very bottom of scroll
+                            ],
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+                      // Sticky Full-Width Hero
+                      if (_focusedChannel != null)
+                        Positioned(
+                          top: 0,
+                          left: 0,
+                          right: 0,
+                          height: 360,
+                          child: _buildFeaturedHero(_focusedChannel!),
+                        ),
+                    ],
                   ),
           ),
           
