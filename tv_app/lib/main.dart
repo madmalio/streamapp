@@ -24,6 +24,8 @@ Future<void> main() async {
       prefs.getString(AppSettings.defaultQualityKey) ?? 'Auto';
   final initialEpgUrl =
       prefs.getString(AppSettings.epgUrlKey) ?? '';
+  final initialLastChannelId =
+      prefs.getString(AppSettings.lastChannelIdKey) ?? '';
 
 
   MediaKit.ensureInitialized();
@@ -34,6 +36,7 @@ Future<void> main() async {
       initialStreamingEngine: initialStreamingEngine,
       initialDefaultQuality: initialDefaultQuality,
       initialEpgUrl: initialEpgUrl,
+      initialLastChannelId: initialLastChannelId,
     ),
   );
 }
@@ -45,12 +48,14 @@ class StreamApp extends StatelessWidget {
     required this.initialStreamingEngine,
     required this.initialDefaultQuality,
     required this.initialEpgUrl,
+    required this.initialLastChannelId,
   });
 
   final String initialBaseUrl;
   final String initialStreamingEngine;
   final String initialDefaultQuality;
   final String initialEpgUrl;
+  final String initialLastChannelId;
 
   @override
   Widget build(BuildContext context) {
@@ -62,6 +67,7 @@ class StreamApp extends StatelessWidget {
             initialStreamingEngine: initialStreamingEngine,
             initialDefaultQuality: initialDefaultQuality,
             initialEpgUrl: initialEpgUrl,
+            initialLastChannelId: initialLastChannelId,
           ),
         ),
         ProxyProvider<AppSettings, ApiService>(

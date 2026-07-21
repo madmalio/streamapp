@@ -6,6 +6,7 @@ import 'dart:ui';
 import '../models/channel.dart';
 import '../models/epg_program.dart';
 import '../services/api_service.dart';
+import '../services/app_settings.dart';
 import 'player_screen.dart';
 import 'settings_screen.dart';
 
@@ -177,10 +178,16 @@ class _GuideScreenState extends State<GuideScreen> {
     _prewarmTimer?.cancel();
     
     if (!mounted) return;
+    
+    context.read<AppSettings>().setLastChannelId(channel.id);
 
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => PlayerScreen(channel: channel, streamUrl: channel.streamUrl),
+        builder: (_) => PlayerScreen(
+          initialChannel: channel, 
+          initialStreamUrl: channel.streamUrl,
+          channels: _channels,
+        ),
       ),
     ).then((_) {
       // Clean up when returning from the player
@@ -204,7 +211,7 @@ class _GuideScreenState extends State<GuideScreen> {
 
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => PlayerScreen(channel: testChannel, streamUrl: _gstTestUrl),
+        builder: (_) => PlayerScreen(initialChannel: testChannel, initialStreamUrl: _gstTestUrl, channels: _channels),
       ),
     );
   }
@@ -246,7 +253,7 @@ class _GuideScreenState extends State<GuideScreen> {
       if (!mounted) return;
       Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (_) => PlayerScreen(channel: testChannel, streamUrl: srtUrl),
+            builder: (_) => PlayerScreen(initialChannel: testChannel, initialStreamUrl: srtUrl, channels: _channels),
         ),
       );
     } catch (e) {
@@ -702,6 +709,18 @@ class _GuideScreenState extends State<GuideScreen> {
                   ),
                   const SizedBox(height: 50),
                   IconButton(
+                    icon: const Icon(Icons.tv, size: 32, color: Colors.white54),
+                    tooltip: 'Live TV',
+                    onPressed: () {
+                      if (_channels.isEmpty) return;
+                      final lastChannelId = context.read<AppSettings>().lastChannelId;
+                      Channel? target = _channels.where((c) => c.id == lastChannelId).firstOrNull;
+                      target ??= _channels.first;
+                      _openChannel(target);
+                    },
+                  ),
+                  const SizedBox(height: 50),
+                  IconButton(
                     icon: const Icon(Icons.settings, size: 32, color: Colors.white54),
                     tooltip: 'Settings',
                     onPressed: () async {
@@ -877,7 +896,7 @@ class _ChannelCardState extends State<ChannelCard> {
 
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => PlayerScreen(channel: widget.channel, streamUrl: widget.channel.streamUrl),
+        builder: (_) => PlayerScreen(initialChannel: widget.channel, initialStreamUrl: widget.channel.streamUrl, channels: []),
       ),
     );
   }

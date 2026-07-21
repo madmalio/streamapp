@@ -29,8 +29,8 @@ import (
 // SpeedTest generates a 5MB payload of random (or zeroes) bytes
 // so the Flutter client can measure its connection speed.
 func SpeedTest(w http.ResponseWriter, r *http.Request) {
-	// 5 Megabytes
-	size := 5 * 1024 * 1024
+	// 2 Megabytes
+	size := 2 * 1024 * 1024
 	payload := make([]byte, size)
 	
 	w.Header().Set("Content-Type", "application/octet-stream")

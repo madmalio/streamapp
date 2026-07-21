@@ -15,13 +15,15 @@ import '../services/app_settings.dart';
 import '../models/epg_program.dart';
 
 class PlayerScreen extends StatefulWidget {
-  final Channel channel;
-  final String streamUrl;
+  final Channel initialChannel;
+  final String initialStreamUrl;
+  final List<Channel> channels;
 
   const PlayerScreen({
     super.key,
-    required this.channel,
-    required this.streamUrl,
+    required this.initialChannel,
+    required this.initialStreamUrl,
+    this.channels = const [],
   });
 
   @override
@@ -34,7 +36,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
   
   RTCVideoRenderer? _webrtcRenderer;
   RTCPeerConnection? _peerConnection;
-  
+
+  late Channel _currentChannel;
+  late String _currentStreamUrl;
+  EPGProgram? _currentProgram;
+  Timer? _epgTimer;
+  Timer? _speedTestTimer;
+
   bool _isChangingQuality = false;
 
   String _currentBitrate = 'Original';
@@ -43,8 +51,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   StreamSubscription<double>? _volumeSubscription;
   String _currentEngine = 'ffmpeg';
   
-  EPGProgram? _currentProgram;
-  Timer? _epgTimer;
   bool _controlsVisible = true;
   Timer? _hideControlsTimer;
 
@@ -64,19 +70,37 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    _currentChannel = widget.initialChannel;
+    _currentStreamUrl = widget.initialStreamUrl;
     _api = context.read<ApiService>();
     final settings = context.read<AppSettings>();
     _currentEngine = settings.streamingEngine;
-    _bootstrapPlayback();
+    _initAndBootstrap();
     _fetchCurrentProgram();
     _epgTimer = Timer.periodic(const Duration(minutes: 1), (_) => _fetchCurrentProgram());
+    _speedTestTimer = Timer.periodic(const Duration(minutes: 10), (_) => _api.primeAutoRecommendation());
     _startHideControlsTimer();
+  }
+
+  Future<void> _initAndBootstrap() async {
+    await _initPlayer();
+    if (mounted) setState(() {});
+    await _bootstrapPlayback();
   }
 
   @override
   void dispose() {
     _epgTimer?.cancel();
+    _speedTestTimer?.cancel();
     _hideControlsTimer?.cancel();
+    _volumeSubscription?.cancel();
+    
+    if (_activeHlsSessionId != null) {
+      _api.stopStream(_activeHlsSessionId!);
+    }
+    _stopWebRTC();
+
+    player?.dispose();
     super.dispose();
   }
 
@@ -89,19 +113,46 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _fetchCurrentProgram() async {
-    final p = await _api.getCurrentProgram(widget.channel.id);
+    final p = await _api.getCurrentProgram(_currentChannel.id);
     if (mounted) {
       setState(() => _currentProgram = p);
     }
   }
 
+  Future<void> _surfToChannel(Channel nextChannel) async {
+    if (_currentChannel.id == nextChannel.id) return;
+    
+    // Clean up current stream gracefully
+    await player?.stop();
+    if (_activeHlsSessionId != null) {
+      final oldId = _activeHlsSessionId;
+      _activeHlsSessionId = null;
+      _api.stopStream(oldId!);
+    }
+    await _stopWebRTC();
+
+    // Save the surfed channel as the last played channel
+    if (mounted) {
+      context.read<AppSettings>().setLastChannelId(nextChannel.id);
+    }
+
+    setState(() {
+      _currentChannel = nextChannel;
+      _currentStreamUrl = nextChannel.streamUrl;
+      _currentProgram = null;
+      _isChangingQuality = false;
+    });
+
+    _fetchCurrentProgram();
+    _bootstrapPlayback();
+  }
+
   Future<void> _bootstrapPlayback() async {
-    await _initPlayer();
     if (!mounted) return;
 
-    if (widget.streamUrl.contains('.m3u8') || widget.streamUrl.startsWith('srt://')) {
+    if (_currentStreamUrl.contains('.m3u8') || _currentStreamUrl.startsWith('srt://')) {
       setState(() => _currentBitrate = 'Original');
-      await _openAndForcePlay(widget.streamUrl);
+      await _openAndForcePlay(_currentStreamUrl);
       return;
     }
 
@@ -241,22 +292,29 @@ class _PlayerScreenState extends State<PlayerScreen> {
       await _stopWebRTC();
 
       if (targetBitrate == 'Original') {
-        await _openAndForcePlay(widget.streamUrl);
+        await _openAndForcePlay(_currentStreamUrl);
         return;
       }
 
       if (targetBitrate == 'WebRTC') {
         try {
           // Extract dynamic tuner IP and channel number from the streamUrl
-          final uri = Uri.parse(widget.channel.streamUrl);
+          final uri = Uri.parse(_currentChannel.streamUrl);
           final tunerIp = uri.host;
-          final channelNumber = uri.pathSegments.last.replaceAll('v', '');
-          final whepUrl = 'http://192.168.4.143:8889/channel/$tunerIp/$channelNumber/whep';
+          final channelNumStr = uri.queryParameters['channel'] ?? uri.pathSegments.last.replaceAll('v', '');
+          
+          if (channelNumStr.isEmpty) {
+            debugPrint('Could not extract channel number for WebRTC, falling back to Original');
+            await _openAndForcePlay(_currentStreamUrl);
+            return;
+          }
+
+          final whepUrl = 'http://192.168.4.143:8889/channel/$tunerIp/$channelNumStr/whep';
           if (!mounted || requestToken != _switchToken) return;
           await _startWebRTC(whepUrl);
         } catch (_) {
           // Fallback if WebRTC fails
-          await _openAndForcePlay(widget.streamUrl);
+          await _openAndForcePlay(_currentStreamUrl);
         }
         return;
       }
@@ -264,7 +322,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       HlsStreamSession session;
       if (targetBitrate == 'Original HLS') {
         session = await _api.startHlsStream(
-          widget.channel.streamUrl,
+          _currentChannel.streamUrl,
           bitrate: 'Original',
           fast: preferFastSwitch,
           transmux: true,
@@ -273,7 +331,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       } else {
         try {
           session = await _api.startHlsStream(
-            widget.channel.streamUrl,
+            _currentChannel.streamUrl,
             bitrate: targetBitrate,
             fast: preferFastSwitch,
             engine: _currentEngine,
@@ -283,7 +341,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           await _api.stopAllStreams();
           await Future<void>.delayed(const Duration(milliseconds: 2000));
           session = await _api.startHlsStream(
-            widget.channel.streamUrl,
+            _currentChannel.streamUrl,
             bitrate: targetBitrate,
             fast: false,
             engine: _currentEngine,
@@ -302,7 +360,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (!mounted) return;
       // Fallback if everything failed (tuner exhausted or backend offline)
       if (!isPlaying) {
-        await _openAndForcePlay(widget.streamUrl);
+        await _openAndForcePlay(_currentStreamUrl);
       }
     } finally {
       if (mounted) {
@@ -391,7 +449,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final newEngine = _currentEngine == 'ffmpeg' ? 'gstreamer' : 'ffmpeg';
     setState(() => _currentEngine = newEngine);
 
-    if (_currentBitrate == 'Original' && widget.streamUrl.contains('.m3u8')) {
+    if (_currentBitrate == 'Original' && _currentStreamUrl.contains('.m3u8')) {
       return;
     }
 
@@ -506,11 +564,34 @@ class _PlayerScreenState extends State<PlayerScreen> {
         body: Focus(
           autofocus: true,
           onKeyEvent: (node, event) {
-            if (event is KeyDownEvent &&
-                (event.logicalKey == LogicalKeyboardKey.escape ||
-                    event.logicalKey == LogicalKeyboardKey.browserBack)) {
-              Navigator.maybePop(context);
-              return KeyEventResult.handled;
+            if (event is KeyDownEvent) {
+              if (event.logicalKey == LogicalKeyboardKey.escape ||
+                  event.logicalKey == LogicalKeyboardKey.browserBack) {
+                Navigator.maybePop(context);
+                return KeyEventResult.handled;
+              }
+              
+              if (event.logicalKey == LogicalKeyboardKey.arrowUp ||
+                  event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                
+                if (widget.channels.isEmpty) return KeyEventResult.ignored;
+                
+                final currentIndex = widget.channels.indexWhere((c) => c.id == _currentChannel.id);
+                if (currentIndex == -1) return KeyEventResult.ignored;
+
+                int nextIndex;
+                if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                  // Up goes to the NEXT channel in the list
+                  nextIndex = (currentIndex + 1) % widget.channels.length;
+                } else {
+                  // Down goes to the PREV channel in the list
+                  nextIndex = (currentIndex - 1 + widget.channels.length) % widget.channels.length;
+                }
+                
+                _surfToChannel(widget.channels[nextIndex]);
+                _startHideControlsTimer(); // Show header with new channel logo/title
+                return KeyEventResult.handled;
+              }
             }
             return KeyEventResult.ignored;
           },
@@ -578,11 +659,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
                           // Channel Logo
-                          if (widget.channel.logoUrl.isNotEmpty)
+                          if (_currentChannel.logoUrl.isNotEmpty)
                             ClipRRect(
                               borderRadius: BorderRadius.circular(8),
                               child: Image.network(
-                                widget.channel.logoUrl,
+                                _currentChannel.logoUrl,
                                 height: 64,
                                 width: 64,
                                 fit: BoxFit.contain,
@@ -596,7 +677,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           // Program Info
                           Expanded(
                             child: Text(
-                              _currentProgram?.title ?? widget.channel.name,
+                              _currentProgram?.title ?? _currentChannel.name,
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 24,

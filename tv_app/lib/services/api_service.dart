@@ -233,7 +233,7 @@ class ApiService {
   Future<double> runSpeedTest() async {
     final startTime = DateTime.now();
     try {
-      final response = await http.get(Uri.parse('$baseUrl/speedtest')).timeout(const Duration(seconds: 10));
+      final response = await http.get(Uri.parse('$baseUrl/speedtest')).timeout(const Duration(seconds: 3));
       if (response.statusCode == 200) {
         final endTime = DateTime.now();
         final duration = endTime.difference(startTime).inMilliseconds;
