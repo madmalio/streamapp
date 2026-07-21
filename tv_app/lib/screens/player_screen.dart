@@ -517,6 +517,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           child: MouseRegion(
             onHover: (_) => _startHideControlsTimer(),
             child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
               onTap: _startHideControlsTimer,
               onPanDown: (_) => _startHideControlsTimer(),
               child: Stack(
@@ -608,37 +609,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                 ),
-                                const SizedBox(height: 8),
-                                if (_currentProgram?.description.isNotEmpty == true)
-                                  Text(
-                                    _currentProgram!.description,
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 14,
-                                      shadows: [Shadow(color: Colors.black, blurRadius: 4)],
-                                    ),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
                               ],
                             ),
                           ),
-                          
-                          // Poster
-                          if (_currentProgram?.posterUrl.isNotEmpty == true)
-                            Padding(
-                              padding: const EdgeInsets.only(left: 24.0),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: Image.network(
-                                  _currentProgram!.posterUrl,
-                                  height: 88,
-                                  width: 64,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (c, e, s) => const SizedBox(),
-                                ),
-                              ),
-                            ),
                         ],
                       ),
                     ),

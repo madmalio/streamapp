@@ -269,15 +269,17 @@ class _GuideScreenState extends State<GuideScreen> {
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
       child: Container(
-        key: ValueKey(channel.id),
-        height: 340, // Slightly more compact hero
+        key: ValueKey('${channel.id}_${_focusedProgram?.id}'),
+        height: 360, // Increased height to prevent overflow
         width: double.infinity,
         margin: const EdgeInsets.only(bottom: 30, right: 40), 
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(24),
           color: const Color(0xFF151515),
           image: DecorationImage(
-            image: const NetworkImage('https://images.unsplash.com/photo-1616469829581-73993eb86b02?q=80&w=2070'),
+            image: NetworkImage((_focusedProgram?.posterUrl != null && _focusedProgram!.posterUrl.isNotEmpty)
+                ? _focusedProgram!.posterUrl
+                : 'https://images.unsplash.com/photo-1616469829581-73993eb86b02?q=80&w=2070'),
             fit: BoxFit.cover,
             colorFilter: ColorFilter.mode(Colors.black.withOpacity(0.4), BlendMode.darken),
           ),
