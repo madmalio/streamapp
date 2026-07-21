@@ -30,6 +30,9 @@ type XMLTVProgramme struct {
 	Desc []struct {
 		Text string `xml:",chardata"`
 	} `xml:"desc"`
+	Icon []struct {
+		Src string `xml:"src,attr"`
+	} `xml:"icon"`
 }
 
 // ParseXMLTVTime parses various common XMLTV date-time string formats.
@@ -107,12 +110,18 @@ func ParseXMLTV(r io.Reader, callback func(prog models.EPGProgram, xmlChan *XMLT
 					desc = p.Desc[0].Text
 				}
 
+				posterUrl := ""
+				if len(p.Icon) > 0 {
+					posterUrl = p.Icon[0].Src
+				}
+
 				prog := models.EPGProgram{
 					ChannelID:   p.Channel, // Stores EPG channel reference ID (e.g. tvg-id)
 					Title:       title,
 					Description: desc,
 					StartTime:   startTime,
 					EndTime:     endTime,
+					PosterURL:   posterUrl,
 				}
 
 				var xmlChan *XMLTVChannel

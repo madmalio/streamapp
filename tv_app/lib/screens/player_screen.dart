@@ -12,6 +12,7 @@ import 'package:http/http.dart' as http;
 import '../models/channel.dart';
 import '../services/api_service.dart';
 import '../services/app_settings.dart';
+import '../models/epg_program.dart';
 
 class PlayerScreen extends StatefulWidget {
   final Channel channel;
@@ -41,6 +42,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   int _switchToken = 0;
   StreamSubscription<double>? _volumeSubscription;
   String _currentEngine = 'ffmpeg';
+  
+  EPGProgram? _currentProgram;
+  Timer? _epgTimer;
+  bool _controlsVisible = true;
+  Timer? _hideControlsTimer;
 
   final List<String> _qualityOptions = [
     'Auto',
@@ -62,6 +68,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final settings = context.read<AppSettings>();
     _currentEngine = settings.streamingEngine;
     _bootstrapPlayback();
+    _fetchCurrentProgram();
+    _epgTimer = Timer.periodic(const Duration(minutes: 1), (_) => _fetchCurrentProgram());
+    _startHideControlsTimer();
+  }
+
+  @override
+  void dispose() {
+    _epgTimer?.cancel();
+    _hideControlsTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startHideControlsTimer() {
+    _hideControlsTimer?.cancel();
+    setState(() => _controlsVisible = true);
+    _hideControlsTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted) setState(() => _controlsVisible = false);
+    });
+  }
+
+  Future<void> _fetchCurrentProgram() async {
+    final p = await _api.getCurrentProgram(widget.channel.id);
+    if (mounted) {
+      setState(() => _currentProgram = p);
+    }
   }
 
   Future<void> _bootstrapPlayback() async {
@@ -483,9 +514,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
             }
             return KeyEventResult.ignored;
           },
-          child: Stack(
-            children: [
-              Center(
+          child: MouseRegion(
+            onHover: (_) => _startHideControlsTimer(),
+            child: GestureDetector(
+              onTap: _startHideControlsTimer,
+              onPanDown: (_) => _startHideControlsTimer(),
+              child: Stack(
+                children: [
+                  Center(
                 child: _currentBitrate == 'WebRTC' && _webrtcRenderer != null
                     ? RTCVideoView(_webrtcRenderer!)
                     : MaterialDesktopVideoControlsTheme(
@@ -513,11 +549,107 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           ? Video(controller: controller!)
                           : const SizedBox(),
                     ),
+                ),
+                
+                // Animated Header
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 300),
+                  top: _controlsVisible ? 0 : -200,
+                  left: 0,
+                  right: 0,
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 300),
+                    opacity: _controlsVisible ? 1.0 : 0.0,
+                    child: Container(
+                      height: 120,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.black.withOpacity(0.9),
+                            Colors.black.withOpacity(0.0),
+                          ],
+                        ),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Channel Logo
+                          if (widget.channel.logoUrl.isNotEmpty)
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.network(
+                                widget.channel.logoUrl,
+                                height: 64,
+                                width: 64,
+                                fit: BoxFit.contain,
+                                errorBuilder: (c, e, s) => const Icon(Icons.tv, size: 64, color: Colors.white54),
+                              ),
+                            )
+                          else
+                            const Icon(Icons.tv, size: 64, color: Colors.white54),
+                          const SizedBox(width: 24),
+                          
+                          // Program Info
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  _currentProgram?.title ?? widget.channel.name,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.bold,
+                                    shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 8),
+                                if (_currentProgram?.description.isNotEmpty == true)
+                                  Text(
+                                    _currentProgram!.description,
+                                    style: const TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 14,
+                                      shadows: [Shadow(color: Colors.black, blurRadius: 4)],
+                                    ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                              ],
+                            ),
+                          ),
+                          
+                          // Poster
+                          if (_currentProgram?.posterUrl.isNotEmpty == true)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 24.0),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.network(
+                                  _currentProgram!.posterUrl,
+                                  height: 88,
+                                  width: 64,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (c, e, s) => const SizedBox(),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ],
+            ),
+          ),
         ),
       ),
-    ),
     );
   }
 }

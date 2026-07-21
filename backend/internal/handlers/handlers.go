@@ -461,7 +461,7 @@ func GetLiveEPG(w http.ResponseWriter, r *http.Request) {
 	futureStr := now.Add(4 * time.Hour).Format(time.RFC3339)
 
 	query := `
-		SELECT id, channel_id, title, description, start_time, end_time 
+		SELECT id, channel_id, title, description, start_time, end_time, poster_url 
 		FROM epg_programs 
 		WHERE end_time > ? AND start_time < ?
 		ORDER BY channel_id, start_time ASC`
@@ -479,6 +479,7 @@ func GetLiveEPG(w http.ResponseWriter, r *http.Request) {
 		Description string    `json:"description"`
 		StartTime   time.Time `json:"start_time"`
 		EndTime     time.Time `json:"end_time"`
+		PosterURL   string    `json:"poster_url"`
 	}
 
 	type ChannelEPG struct {
@@ -490,7 +491,9 @@ func GetLiveEPG(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id, chanID string
 		var p ProgramDetails
-		if err := rows.Scan(&id, &chanID, &p.Title, &p.Description, &p.StartTime, &p.EndTime); err == nil {
+		var posterOpt sql.NullString
+		if err := rows.Scan(&id, &chanID, &p.Title, &p.Description, &p.StartTime, &p.EndTime, &posterOpt); err == nil {
+			p.PosterURL = posterOpt.String
 			p.ID = id
 			if entry, exists := epgMap[chanID]; exists {
 				entry.Programs = append(entry.Programs, p)
@@ -503,6 +506,44 @@ func GetLiveEPG(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, epgMap)
+}
+
+// GetCurrentProgram retrieves the currently playing program for a specific channel.
+func GetCurrentProgram(w http.ResponseWriter, r *http.Request) {
+	chanID := chi.URLParam(r, "id")
+	if chanID == "" {
+		writeError(w, http.StatusBadRequest, "Channel ID is required")
+		return
+	}
+
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+
+	query := `
+		SELECT id, title, description, start_time, end_time, poster_url 
+		FROM epg_programs 
+		WHERE channel_id = ? AND end_time > ? AND start_time <= ?
+		ORDER BY start_time DESC LIMIT 1`
+
+	var p models.EPGProgram
+	var posterOpt sql.NullString
+	var startStr, endStr string
+
+	err := database.DB.QueryRow(query, chanID, nowStr, nowStr).Scan(&p.ID, &p.Title, &p.Description, &startStr, &endStr, &posterOpt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, "No active program found")
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	p.ChannelID = chanID
+	p.PosterURL = posterOpt.String
+	p.StartTime, _ = time.Parse(time.RFC3339, startStr)
+	p.EndTime, _ = time.Parse(time.RFC3339, endStr)
+
+	writeJSON(w, http.StatusOK, p)
 }
 
 // Helpers
@@ -852,13 +893,14 @@ func syncEPGSource(xmltvURL string) error {
 		title TEXT NOT NULL,
 		description TEXT,
 		start_time DATETIME NOT NULL,
-		end_time DATETIME NOT NULL
+		end_time DATETIME NOT NULL,
+		poster_url TEXT
 	)`)
 	if err != nil {
 		return fmt.Errorf("recreate epg_programs failed: %w", err)
 	}
 
-	stmt, err := tx.Prepare("INSERT INTO epg_programs (id, channel_id, title, description, start_time, end_time) VALUES (?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO epg_programs (id, channel_id, title, description, start_time, end_time, poster_url) VALUES (?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
@@ -946,7 +988,7 @@ func syncEPGSource(xmltvURL string) error {
 			}
 
 			progID := uuid.New().String()
-			_, err = stmt.Exec(progID, matchedChanID, prog.Title, prog.Description, prog.StartTime.UTC().Format(time.RFC3339), prog.EndTime.UTC().Format(time.RFC3339))
+			_, err = stmt.Exec(progID, matchedChanID, prog.Title, prog.Description, prog.StartTime.UTC().Format(time.RFC3339), prog.EndTime.UTC().Format(time.RFC3339), prog.PosterURL)
 			if err != nil {
 				return fmt.Errorf("constraint error on channel_id=%s: %w", matchedChanID, err)
 			}

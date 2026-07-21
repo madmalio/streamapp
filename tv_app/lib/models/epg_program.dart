@@ -5,6 +5,7 @@ class EPGProgram {
   final String description;
   final DateTime startTime;
   final DateTime endTime;
+  final String posterUrl;
 
   EPGProgram({
     required this.id,
@@ -13,6 +14,7 @@ class EPGProgram {
     required this.description,
     required this.startTime,
     required this.endTime,
+    this.posterUrl = '',
   });
 
   factory EPGProgram.fromJson(Map<String, dynamic> json) {
@@ -23,6 +25,7 @@ class EPGProgram {
       description: json['description'] ?? '',
       startTime: DateTime.parse(json['start_time']).toLocal(),
       endTime: DateTime.parse(json['end_time']).toLocal(),
+      posterUrl: json['poster_url'] ?? '',
     );
   }
 }

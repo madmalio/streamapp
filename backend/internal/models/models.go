@@ -38,4 +38,5 @@ type EPGProgram struct {
 	Description string    `json:"description"`
 	StartTime   time.Time `json:"start_time"`
 	EndTime     time.Time `json:"end_time"`
+	PosterURL   string    `json:"poster_url"`
 }

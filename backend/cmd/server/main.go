@@ -76,6 +76,7 @@ func main() {
 
 		// EPG
 		api.Get("/epg/live", handlers.GetLiveEPG)
+		api.Get("/epg/current/{id}", handlers.GetCurrentProgram)
 		api.Post("/epg/sync", handlers.SyncEPGHandler)
 
 		// Streaming Endpoints

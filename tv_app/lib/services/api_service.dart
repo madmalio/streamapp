@@ -130,6 +130,17 @@ class ApiService {
     }
   }
 
+  Future<EPGProgram?> getCurrentProgram(String channelId) async {
+    try {
+      final response = await http.get(Uri.parse('$baseUrl/epg/current/$channelId')).timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> json = jsonDecode(response.body);
+        return EPGProgram.fromJson(json);
+      }
+    } catch (_) {}
+    return null;
+  }
+
   Future<String> getStreamUrl(String rawUrl, {String bitrate = 'Original', String? engine}) async {
     if (bitrate == 'Original') {
       // Fetch the raw stream URL
