@@ -5,6 +5,7 @@ import 'dart:async';
 import 'dart:ui';
 import '../models/channel.dart';
 import '../models/epg_program.dart';
+import '../models/playlist.dart';
 import '../services/api_service.dart';
 import '../services/app_settings.dart';
 import 'player_screen.dart';
@@ -17,10 +18,28 @@ class GuideScreen extends StatefulWidget {
   State<GuideScreen> createState() => _GuideScreenState();
 }
 
+class _TunerTab extends StatefulWidget {
+  final Widget child;
+  const _TunerTab({required this.child});
+  @override
+  State<_TunerTab> createState() => _TunerTabState();
+}
+
+class _TunerTabState extends State<_TunerTab> with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return widget.child;
+  }
+}
+
 class _GuideScreenState extends State<GuideScreen> {
   static const bool _prewarmEnabled = false;
   static const String _gstTestUrl = 'http://192.168.4.143:8090/stream.m3u8';
 
+  List<Playlist> _playlists = [];
   List<Channel> _channels = [];
   Map<String, ChannelEPG> _epgData = {};
   Channel? _focusedChannel;
@@ -57,6 +76,7 @@ class _GuideScreenState extends State<GuideScreen> {
     try {
       final api = Provider.of<ApiService>(context, listen: false);
       final channels = await api.getChannels();
+      final playlists = await api.getPlaylists();
       Map<String, ChannelEPG> epg = {};
       try {
         epg = await api.getLiveEpg();
@@ -68,6 +88,7 @@ class _GuideScreenState extends State<GuideScreen> {
       var filteredChannels = channels.where((c) => c.name.trim().isNotEmpty && !c.isHidden).toList();
 
       setState(() {
+        _playlists = playlists;
         _channels = filteredChannels;
         _epgData = epg;
         if (_channels.isNotEmpty && _focusedChannel == null) {
@@ -186,7 +207,8 @@ class _GuideScreenState extends State<GuideScreen> {
         builder: (_) => PlayerScreen(
           initialChannel: channel, 
           initialStreamUrl: channel.streamUrl,
-          channels: _channels,
+          channels: _channels.where((c) => c.playlistId == channel.playlistId).toList(),
+          epgData: _epgData,
         ),
       ),
     ).then((_) {
@@ -625,51 +647,117 @@ class _GuideScreenState extends State<GuideScreen> {
   @override
   Widget build(BuildContext context) {
     final hasFavorites = _channels.any((c) => c.isFavorite);
+    final tabCount = _playlists.isEmpty ? 1 : _playlists.length;
     
-    return Scaffold(
-      backgroundColor: const Color(0xFF0F0F0F),
-      body: Stack(
-        children: [
-          // Main Content Area (Positioned behind the sidebar)
-          Positioned(
-            left: 80, // Offset by sidebar width
-            right: 0,
-            top: 0,
-            bottom: 0,
-            child: _isLoading
-                ? const Center(child: CircularProgressIndicator(color: Colors.blueAccent))
-                : Stack(
-                    children: [
-                      // Scrollable Guide beneath the hero
-                      Positioned.fill(
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.only(top: 380.0, left: 40.0, right: 0, bottom: 20.0), // padding matches hero height
-                          clipBehavior: Clip.none,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              if (_currentTabIndex == 0) ...[
-                                if (hasFavorites)
-                                  _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
-                                _buildChannelRow('All Channels', _channels),
-                              ] else if (_currentTabIndex == 1) ...[
-                                if (hasFavorites)
-                                  _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
-                                _buildEpgGrid('Live TV Guide', _channels),
-                              ],
-                              const SizedBox(height: 40), // Extra padding at very bottom of scroll
-                            ],
+    return DefaultTabController(
+      length: tabCount,
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0F0F0F),
+        body: Stack(
+          children: [
+            // Main Content Area (Positioned behind the sidebar)
+            Positioned(
+              left: 80, // Offset by sidebar width
+              right: 0,
+              top: 0,
+              bottom: 0,
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator(color: Colors.blueAccent))
+                  : Stack(
+                      children: [
+                        // Sticky Full-Width Hero
+                        if (_focusedChannel != null)
+                          Positioned(
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            height: 360,
+                            child: _buildFeaturedHero(_focusedChannel!),
+                          ),
+                        
+                        // Sticky TabBar below hero
+                        Positioned(
+                          top: 360,
+                          left: 40,
+                          right: 40,
+                          child: TabBar(
+                            isScrollable: true,
+                            indicatorColor: Colors.blueAccent,
+                            labelColor: Colors.white,
+                            unselectedLabelColor: Colors.white54,
+                            tabs: _playlists.isEmpty
+                                ? [const Tab(text: 'All Channels')]
+                                : _playlists.map((p) => Tab(text: p.name)).toList(),
                           ),
                         ),
-                      ),
-                      // Sticky Full-Width Hero
-                      if (_focusedChannel != null)
-                        Positioned(
-                          top: 0,
-                          left: 0,
-                          right: 0,
-                          height: 360,
-                          child: _buildFeaturedHero(_focusedChannel!),
+                        
+                        // Scrollable Guide beneath the TabBar
+                        Positioned.fill(
+                          top: 410, // 360 hero + 50 tabbar
+                          child: TabBarView(
+                            children: _playlists.isEmpty
+                                ? [
+                                    _TunerTab(
+                                      child: SingleChildScrollView(
+                                        padding: const EdgeInsets.only(top: 20.0, left: 40.0, right: 0, bottom: 20.0),
+                                        clipBehavior: Clip.none,
+                                        child: IndexedStack(
+                                          index: _currentTabIndex,
+                                          children: [
+                                            Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                if (hasFavorites) _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
+                                                _buildChannelRow('All Channels', _channels),
+                                                const SizedBox(height: 40),
+                                              ],
+                                            ),
+                                            Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                if (hasFavorites) _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
+                                                _buildEpgGrid('Live TV Guide', _channels),
+                                                const SizedBox(height: 40),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    )
+                                  ]
+                                : _playlists.map((p) {
+                                    final tunerChannels = _channels.where((c) => c.playlistId == p.id).toList();
+                                    return _TunerTab(
+                                      child: SingleChildScrollView(
+                                        padding: const EdgeInsets.only(top: 20.0, left: 40.0, right: 0, bottom: 20.0),
+                                        clipBehavior: Clip.none,
+                                        child: IndexedStack(
+                                          index: _currentTabIndex,
+                                          children: [
+                                            Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                if (tunerChannels.any((c) => c.isFavorite))
+                                                  _buildChannelRow('Favorites', tunerChannels.where((c) => c.isFavorite).toList()),
+                                                if (tunerChannels.isNotEmpty) _buildChannelRow(p.name, tunerChannels),
+                                                const SizedBox(height: 40),
+                                              ],
+                                            ),
+                                            Column(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                if (tunerChannels.any((c) => c.isFavorite))
+                                                  _buildChannelRow('Favorites', tunerChannels.where((c) => c.isFavorite).toList()),
+                                                if (tunerChannels.isNotEmpty) _buildEpgGrid('${p.name} Guide', tunerChannels),
+                                                const SizedBox(height: 40),
+                                              ],
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  }).toList(),
+                          ),
                         ),
                     ],
                   ),
@@ -738,6 +826,7 @@ class _GuideScreenState extends State<GuideScreen> {
             ),
           ),
         ],
+      ),
       ),
     );
   }

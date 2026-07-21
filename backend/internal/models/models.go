@@ -11,6 +11,13 @@ type Playlist struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type EpgSource struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	URL       string    `json:"url"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // ChannelGroup represents a category grouping of channels.
 type ChannelGroup struct {
 	ID         string `json:"id"`
@@ -21,6 +28,7 @@ type ChannelGroup struct {
 // Channel represents an individual streamable channel.
 type Channel struct {
 	ID            string `json:"id"`
+	PlaylistID    string `json:"playlist_id"`
 	GroupID       string `json:"group_id"`
 	Name          string `json:"name"`
 	StreamURL     string `json:"stream_url"`

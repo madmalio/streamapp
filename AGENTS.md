@@ -13,3 +13,4 @@
   - `./streamapp-backend`
 - **Go/SQLite Boolean Mapping**: When querying SQLite `INTEGER` columns that represent booleans (e.g. `is_hidden BOOLEAN DEFAULT 0`), do not use `sql.NullBool` or `sql.NullInt64` in `rows.Scan`. Use a generic `interface{}` and cast appropriately, as the `go-sqlite3` driver intercepts booleans and maps them to Go `bool`s unpredictably.
 - **SQLite Transaction Locking**: When holding a write transaction (`tx.Begin()`), do not execute queries using the global `database.DB` connection, as it will silently fail with a `SQLITE_BUSY` lock error. Always execute queries on the transaction (`tx.Exec`) until it is committed.
+- **Free IPTV Playback (Pluto TV)**: When passing external IPTV `.m3u8` links directly to `media_kit`, ensure you configure `http-header-fields` with a standard browser `User-Agent`. Empty or `libmpv` user agents are frequently blocked by these providers.

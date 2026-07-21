@@ -25,9 +25,17 @@
 - **Fixed multiple SQLite & driver bugs:** We migrated all boolean fetching to a generic `interface{}` scanner (`parseSQLiteBool`) to bypass unpredictable casting in `go-sqlite3`.
 - **Fixed database lock on logos:** Modified `syncEPGSource` to use `tx.Exec` when saving logos to avoid `SQLITE_BUSY` conflicts with the active EPG insertion transaction.
 - **Improved XMLTV Matching:** Modified the EPG channel matching algorithm to use fuzzy substring matches (`strings.Contains`) instead of strict prefixes so SiliconDust's EPG guides fully map to the tuner's channel names.
+- **Frontend Performance Optimizations:** 
+  - Passed EPG map directly from `GuideScreen` to `PlayerScreen` to eliminate massive 2.5MB redundant API calls on channel playback.
+  - Implemented `AutomaticKeepAliveClientMixin` for the `TabBar` views to persist guide renderings in memory.
+  - Used an `IndexedStack` for the sidebar's Channels/Guide toggle, instantly switching between them without re-rendering.
+- **Pluto TV & Native Playback:**
+  - Bypassed the 2-second "tuner warmup" delay in `PlayerScreen` for non-local M3U streams.
+  - Injected standard browser `User-Agent` HTTP headers into `media_kit` to prevent blocks from free IPTV providers.
 
 ## Current Problem (End of Session)
-- **Deployment Handoff:** The backend code has been perfected and is ready for a final push and rebuild on the user's dev-server (`192.168.4.143`).
+- **Pluto TV Source Link:** The user's specific Pluto TV playlist URL is currently dead and failing in VLC. They will need to locate a new/working Pluto TV `.m3u` link.
+- **Deployment Handoff:** The backend code has been perfected and is ready for a final push and rebuild on the user's dev-server (`192.168.4.143`). The frontend code has also been drastically optimized.
 
 ## Next Steps (Recommended)
 1. Get the user's feedback on whether the new optimized GStreamer pipeline starts up fast enough.

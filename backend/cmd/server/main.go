@@ -27,6 +27,9 @@ func main() {
 	}
 	defer db.Close()
 
+	// Start EPG Background Scheduler
+	go handlers.StartEPGAutoSync()
+
 	r := chi.NewRouter()
 
 	// Standard tools for server stability and logs
@@ -63,6 +66,7 @@ func main() {
 		// Playlists
 		api.Get("/playlists", handlers.GetPlaylists)
 		api.Post("/playlists", handlers.AddPlaylist)
+		api.Put("/playlists/{id}", handlers.UpdatePlaylist)
 		api.Delete("/playlists/{id}", handlers.DeletePlaylist)
 		api.Post("/playlists/{id}/sync", handlers.SyncPlaylist)
 
@@ -78,11 +82,19 @@ func main() {
 		api.Get("/epg/live", handlers.GetLiveEPG)
 		api.Get("/epg/current/{id}", handlers.GetCurrentProgram)
 		api.Post("/epg/sync", handlers.SyncEPGHandler)
+		
+		// EPG Sources
+		api.Get("/epg/sources", handlers.GetEpgSources)
+		api.Post("/epg/sources", handlers.AddEpgSource)
+		api.Put("/epg/sources/{id}", handlers.UpdateEpgSource)
+		api.Delete("/epg/sources/{id}", handlers.DeleteEpgSource)
+		api.Post("/epg/sources/{id}/sync", handlers.SyncEpgSourceHandler)
 
 		// Streaming Endpoints
 		api.Get("/streams/play", handlers.PlayStream)
 		api.Get("/streams/start", handlers.StartHLSStream)
 		api.Get("/streams/stop", handlers.StopHLSStream)
+		api.Post("/streams/heartbeat/{id}", handlers.HeartbeatStream)
 		api.Get("/streams/stop_all", handlers.StopAllStreams)
 		api.Get("/streams/hls/{id}/*", handlers.ServeHLSSegments)
 	})

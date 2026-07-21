@@ -18,19 +18,21 @@ class PlayerScreen extends StatefulWidget {
   final Channel initialChannel;
   final String initialStreamUrl;
   final List<Channel> channels;
+  final Map<String, ChannelEPG> epgData;
 
   const PlayerScreen({
     super.key,
     required this.initialChannel,
     required this.initialStreamUrl,
     this.channels = const [],
+    this.epgData = const {},
   });
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
+class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver {
   Player? player;
   VideoController? controller;
   
@@ -40,14 +42,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
   late Channel _currentChannel;
   late String _currentStreamUrl;
   EPGProgram? _currentProgram;
+  Map<String, ChannelEPG>? _liveEpg;
   Timer? _epgTimer;
   Timer? _speedTestTimer;
+  Timer? _heartbeatTimer;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.detached || state == AppLifecycleState.paused) {
+      if (_activeHlsSessionId != null) {
+        _api.stopStream(_activeHlsSessionId!);
+      }
+      _stopWebRTC();
+    }
+  }
 
   bool _isChangingQuality = false;
+  bool _isMenuOpen = false;
 
   String _currentBitrate = 'Original';
   String? _activeHlsSessionId;
   int _switchToken = 0;
+  
+  bool _webrtcMuted = false;
+  bool _webrtcPlaying = true;
+  bool _webrtcFullscreen = false;
   StreamSubscription<double>? _volumeSubscription;
   String _currentEngine = 'ffmpeg';
   
@@ -70,9 +89,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _currentChannel = widget.initialChannel;
     _currentStreamUrl = widget.initialStreamUrl;
     _api = context.read<ApiService>();
+    _liveEpg = widget.epgData;
+
     final settings = context.read<AppSettings>();
     _currentEngine = settings.streamingEngine;
     _initAndBootstrap();
@@ -90,9 +112,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _epgTimer?.cancel();
     _speedTestTimer?.cancel();
     _hideControlsTimer?.cancel();
+    _heartbeatTimer?.cancel();
     _volumeSubscription?.cancel();
     
     if (_activeHlsSessionId != null) {
@@ -104,6 +128,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
     super.dispose();
   }
 
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    if (_activeHlsSessionId != null) {
+      _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+        if (_activeHlsSessionId != null && mounted) {
+          _api.sendHeartbeat(_activeHlsSessionId!);
+        }
+      });
+    }
+  }
+
   void _startHideControlsTimer() {
     _hideControlsTimer?.cancel();
     setState(() => _controlsVisible = true);
@@ -113,8 +148,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   Future<void> _fetchCurrentProgram() async {
-    final p = await _api.getCurrentProgram(_currentChannel.id);
-    if (mounted) {
+    final targetChannelId = _currentChannel.id;
+    final p = await _api.getCurrentProgram(targetChannelId);
+    if (mounted && _currentChannel.id == targetChannelId) {
       setState(() => _currentProgram = p);
     }
   }
@@ -170,7 +206,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> _openAndForcePlay(String url) async {
     if (player == null) return;
     
-    final isTranscodedHls = url.contains('.m3u8');
+    final isTranscodedHls = url.contains('.m3u8') && url.contains('192.168.');
     
     // For transcoded HLS streams, we open them paused so the player caches data ahead
     // of the playhead. This ensures a thick buffer before playback begins.
@@ -239,6 +275,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       await nativePlayer.setProperty('video-sync', 'audio');
       await nativePlayer.setProperty('hwdec', 'auto');
       await nativePlayer.setProperty('network-timeout', '10');
+      await nativePlayer.setProperty('http-header-fields', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     } catch (e) {
       debugPrint('Player parameters not applied: $e');
     }
@@ -269,16 +306,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
       // Aggressively stop the old HLS stream before starting the new one.
       // This is absolutely critical for HDHomeRun tuners which cannot pool connections.
       if (oldSessionId != null) {
+        _heartbeatTimer?.cancel();
         _activeHlsSessionId = null;
         await _api.stopStream(oldSessionId);
       }
       
       // Wait a grace period to ensure the HDHomeRun has fully cleared the tuner state internally.
       // Embedded devices often take 1-2 seconds to register a closed TCP socket and free the physical tuner.
-      await Future<void>.delayed(const Duration(milliseconds: 2000));
+      if (_currentChannel.streamUrl.contains(':5004') || _currentChannel.streamUrl.contains('192.168.')) {
+        await Future<void>.delayed(const Duration(milliseconds: 2000));
+      }
 
       String targetBitrate = bitrate;
-      if (bitrate == 'Auto') {
+
+      // If it's not a local HDHomeRun stream (e.g., Pluto TV M3U), force Original quality
+      // to bypass the FFmpeg transcoder and WebRTC entirely, letting MediaKit handle it natively.
+      if (!_currentChannel.streamUrl.contains(':5004') && 
+          !_currentChannel.streamUrl.contains('192.168.')) {
+        targetBitrate = 'Original';
+        if (!mounted || requestToken != _switchToken) return;
+        setState(() => _currentBitrate = targetBitrate);
+      } else if (bitrate == 'Auto') {
         targetBitrate = await _api.getRecommendedBitrate(
           forceRefresh: refreshAutoRecommendation,
           fallbackOnUnknown: fallbackOnUnknownAuto,
@@ -356,6 +404,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
       await _openAndForcePlay(session.url);
       _activeHlsSessionId = session.sessionId;
+      _startHeartbeat();
     } catch (e) {
       if (!mounted) return;
       // Fallback if everything failed (tuner exhausted or backend offline)
@@ -465,6 +514,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     await _changeQuality(bitrate, preferFastSwitch: true);
   }
 
+
+
   Widget _buildQualityMenu() {
     return IconButton(
       icon: const Icon(Icons.settings, color: Colors.white),
@@ -571,8 +622,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
                 return KeyEventResult.handled;
               }
               
+              if (event.logicalKey == LogicalKeyboardKey.select ||
+                  event.logicalKey == LogicalKeyboardKey.enter) {
+                setState(() {
+                  _isMenuOpen = !_isMenuOpen;
+                });
+                return KeyEventResult.handled;
+              }
+
               if (event.logicalKey == LogicalKeyboardKey.arrowUp ||
                   event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                
+                if (_isMenuOpen) return KeyEventResult.ignored;
                 
                 if (widget.channels.isEmpty) return KeyEventResult.ignored;
                 
@@ -613,6 +674,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             const MaterialPositionIndicator(),
                             const Spacer(),
                             const MaterialDesktopVolumeButton(),
+                            IconButton(
+                              icon: const Icon(Icons.list, color: Colors.white),
+                              onPressed: () => setState(() => _isMenuOpen = !_isMenuOpen),
+                              tooltip: 'Channels',
+                            ),
                             _buildQualityMenu(),
                             const MaterialDesktopFullscreenButton(),
                           ],
@@ -623,6 +689,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             const MaterialPositionIndicator(),
                             const Spacer(),
                             const MaterialDesktopVolumeButton(),
+                            IconButton(
+                              icon: const Icon(Icons.list, color: Colors.white),
+                              onPressed: () => setState(() => _isMenuOpen = !_isMenuOpen),
+                              tooltip: 'Channels',
+                            ),
                             _buildQualityMenu(),
                             const MaterialDesktopFullscreenButton(),
                           ],
@@ -677,7 +748,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           // Program Info
                           Expanded(
                             child: Text(
-                              _currentProgram?.title ?? _currentChannel.name,
+                              _currentProgram?.title ?? '',
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 24,
@@ -693,10 +764,126 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     ),
                   ),
                 ),
+
+                // WebRTC Custom Bottom Controls
+                if (_currentBitrate == 'WebRTC')
+                  AnimatedPositioned(
+                    duration: const Duration(milliseconds: 300),
+                    bottom: _controlsVisible ? 0 : -100,
+                    left: 0,
+                    right: 0,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 300),
+                      opacity: _controlsVisible ? 1.0 : 0.0,
+                      child: Container(
+                        height: 80,
+                        decoration: const BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.bottomCenter,
+                            end: Alignment.topCenter,
+                            colors: [Colors.black87, Colors.transparent],
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            const Spacer(),
+                            IconButton(
+                              icon: const Icon(Icons.list, color: Colors.white),
+                              onPressed: () => setState(() => _isMenuOpen = !_isMenuOpen),
+                              tooltip: 'Channels',
+                            ),
+                            _buildQualityMenu(),
+                            const SizedBox(width: 24),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Channels Menu Overlay
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                  top: 0,
+                  bottom: 0,
+                  right: _isMenuOpen ? 0 : -350,
+                  child: _buildChannelsMenu(),
+                ),
               ],
             ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildChannelsMenu() {
+    return Container(
+      width: 350,
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.85),
+        border: Border(left: BorderSide(color: Colors.white24, width: 1)),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Channels',
+                  style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  onPressed: () => setState(() => _isMenuOpen = false),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              itemCount: widget.channels.length,
+              itemBuilder: (context, index) {
+                final channel = widget.channels[index];
+                final isSelected = channel.id == _currentChannel.id;
+                
+                final now = DateTime.now();
+                final epg = _liveEpg?[channel.id];
+                final currentProg = epg?.programs.where((p) => p.startTime.isBefore(now) && p.endTime.isAfter(now)).firstOrNull;
+                
+                return ListTile(
+                  leading: channel.logoUrl.isNotEmpty
+                      ? Image.network(
+                          channel.logoUrl, 
+                          width: 40, 
+                          height: 40, 
+                          fit: BoxFit.contain,
+                          errorBuilder: (c, e, s) => const Icon(Icons.tv, color: Colors.white54, size: 40),
+                        )
+                      : const Icon(Icons.tv, color: Colors.white54, size: 40),
+                  title: Text(currentProg?.title ?? channel.name, style: const TextStyle(color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text('CH ${channel.guideNumber}', style: const TextStyle(color: Colors.white54)),
+                  selectedTileColor: Colors.blue.withOpacity(0.3),
+                  focusColor: Colors.white24,
+                  hoverColor: Colors.white12,
+                  autofocus: isSelected,
+                  selected: isSelected,
+                  onTap: () {
+                    setState(() => _isMenuOpen = false);
+                    _surfToChannel(channel);
+                  },
+                );
+              },
+            ),
+            ),
+          ],
         ),
       ),
     );

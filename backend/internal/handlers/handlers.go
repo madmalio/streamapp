@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"crypto/sha256"
+	"log"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -56,7 +57,7 @@ var (
 )
 
 func init() {
-	sessionTimeout := 5 * time.Minute
+	sessionTimeout := 30 * time.Second
 	if rawTimeout := strings.TrimSpace(os.Getenv("FFMPEG_HLS_SESSION_TIMEOUT_SECONDS")); rawTimeout != "" {
 		if seconds, err := strconv.Atoi(rawTimeout); err == nil && seconds > 0 {
 			sessionTimeout = time.Duration(seconds) * time.Second
@@ -171,6 +172,39 @@ func AddPlaylist(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// UpdatePlaylist updates a playlist's properties and resyncs channels.
+func UpdatePlaylist(w http.ResponseWriter, r *http.Request) {
+	pID := chi.URLParam(r, "id")
+
+	var req PlaylistRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	req.Type = strings.ToUpper(req.Type)
+
+	_, err := database.DB.Exec(
+		"UPDATE playlists SET name = ?, url_path = ? WHERE id = ?",
+		req.Name, req.URLPath, pID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to update playlist: "+err.Error())
+		return
+	}
+
+	// Trigger resync with new URL
+	if err := syncPlaylistSource(pID, req.URLPath, req.Type, req.Username, req.Password); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed channels sync after update: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Playlist updated and channels resynced successfully",
+	})
+}
+
 // SyncPlaylist triggers a manual resync of channels for a playlist.
 func SyncPlaylist(w http.ResponseWriter, r *http.Request) {
 	pID := chi.URLParam(r, "id")
@@ -261,7 +295,102 @@ func DeletePlaylist(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetGroups retrieves all channel categories (ChannelGroups).
+// EPG Source Handlers
+
+type EpgSourceRequest struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+func GetEpgSources(w http.ResponseWriter, r *http.Request) {
+	rows, err := database.DB.Query("SELECT id, name, url, created_at FROM epg_sources ORDER BY created_at DESC")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch EPG sources")
+		return
+	}
+	defer rows.Close()
+
+	sources := []models.EpgSource{}
+	for rows.Next() {
+		var s models.EpgSource
+		if err := rows.Scan(&s.ID, &s.Name, &s.URL, &s.CreatedAt); err != nil {
+			continue
+		}
+		sources = append(sources, s)
+	}
+	writeJSON(w, http.StatusOK, sources)
+}
+
+func AddEpgSource(w http.ResponseWriter, r *http.Request) {
+	var req EpgSourceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	sID := uuid.New().String()
+	_, err := database.DB.Exec(
+		"INSERT INTO epg_sources (id, name, url) VALUES (?, ?, ?)",
+		sID, req.Name, req.URL,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to add EPG source: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"success": true,
+		"source_id": sID,
+	})
+}
+
+func UpdateEpgSource(w http.ResponseWriter, r *http.Request) {
+	sID := chi.URLParam(r, "id")
+	var req EpgSourceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	_, err := database.DB.Exec(
+		"UPDATE epg_sources SET name = ?, url = ? WHERE id = ?",
+		req.Name, req.URL, sID,
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to update EPG source: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+func DeleteEpgSource(w http.ResponseWriter, r *http.Request) {
+	sID := chi.URLParam(r, "id")
+	_, err := database.DB.Exec("DELETE FROM epg_sources WHERE id = ?", sID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to delete EPG source")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+func SyncEpgSourceHandler(w http.ResponseWriter, r *http.Request) {
+	sID := chi.URLParam(r, "id")
+	var url string
+	err := database.DB.QueryRow("SELECT url FROM epg_sources WHERE id = ?", sID).Scan(&url)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "EPG source not found")
+		return
+	}
+
+	// Use existing syncEPGSource logic
+	err = syncEPGSource(url, sID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to parse EPG: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "message": "EPG synced successfully"})
+}
+
+// GetChannels returns all channels, optionally filtered by playlist_id.
 func GetGroups(w http.ResponseWriter, r *http.Request) {
 	playlistID := r.URL.Query().Get("playlistId")
 
@@ -298,7 +427,7 @@ func GetChannels(w http.ResponseWriter, r *http.Request) {
 	groupID := r.URL.Query().Get("groupId")
 	search := r.URL.Query().Get("search")
 
-	query := "SELECT id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden FROM channels WHERE 1=1"
+	query := "SELECT id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden FROM channels WHERE 1=1"
 	args := []interface{}{}
 
 	if playlistID != "" {
@@ -328,7 +457,7 @@ func GetChannels(w http.ResponseWriter, r *http.Request) {
 		var logoURLOpt sql.NullString
 		var guideNumOpt sql.NullString
 		var isHiddenRaw interface{}
-		if err := rows.Scan(&c.ID, &groupIDOpt, &c.Name, &c.StreamURL, &logoURLOpt, &c.ChannelNumber, &guideNumOpt, &isHiddenRaw); err != nil {
+		if err := rows.Scan(&c.ID, &c.PlaylistID, &groupIDOpt, &c.Name, &c.StreamURL, &logoURLOpt, &c.ChannelNumber, &guideNumOpt, &isHiddenRaw); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -433,6 +562,8 @@ func UpdateChannelVisibility(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
 }
 
+// StartEPGAutoSync runs an infinite loop in the background to automatically
+// sync all configured EPG sources periodically.
 // SyncEPGHandler parses and syncs EPG data from an XMLTV URL.
 func SyncEPGHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -443,7 +574,7 @@ func SyncEPGHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := syncEPGSource(req.URL); err != nil {
+	if err := syncEPGSource(req.URL, ""); err != nil {
 		writeError(w, http.StatusInternalServerError, "EPG Sync failed: "+err.Error())
 		return
 	}
@@ -452,6 +583,43 @@ func SyncEPGHandler(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 		"message": "EPG XMLTV data synced successfully",
 	})
+}
+
+func StartEPGAutoSync() {
+	// Initial delay so we don't bog down server startup
+	time.Sleep(5 * time.Minute)
+
+	for {
+		log.Println("[EPG Auto-Sync] Starting background sync for all sources...")
+		rows, err := database.DB.Query("SELECT id, url FROM epg_sources")
+		if err != nil {
+			log.Printf("[EPG Auto-Sync] Error querying epg_sources: %v\n", err)
+		} else {
+			type EpgSrc struct {
+				ID  string
+				URL string
+			}
+			var sources []EpgSrc
+			for rows.Next() {
+				var src EpgSrc
+				if err := rows.Scan(&src.ID, &src.URL); err == nil {
+					sources = append(sources, src)
+				}
+			}
+			rows.Close()
+
+			for _, s := range sources {
+				log.Printf("[EPG Auto-Sync] Syncing source: %s\n", s.URL)
+				if err := syncEPGSource(s.URL, s.ID); err != nil {
+					log.Printf("[EPG Auto-Sync] Failed to sync %s: %v\n", s.URL, err)
+				}
+			}
+			log.Println("[EPG Auto-Sync] Background sync complete.")
+		}
+
+		// Sleep for 12 hours before the next sync
+		time.Sleep(12 * time.Hour)
+	}
 }
 
 // GetLiveEPG retrieves the program listing for active channels for the next 4 hours.
@@ -834,7 +1002,7 @@ func syncHDHomeRun(pID, urlPath string) error {
 	return tx.Commit()
 }
 
-func syncEPGSource(xmltvURL string) error {
+func syncEPGSource(xmltvURL string, sourceID string) error {
 	var r io.Reader
 	isHDHomeRunAuto := (xmltvURL == "HDHOMERUN_AUTO")
 
@@ -885,22 +1053,13 @@ func syncEPGSource(xmltvURL string) error {
 	}
 	defer tx.Rollback()
 
-	// Clear old guide data and ensure schema is correct
-	_, _ = tx.Exec("DROP TABLE IF EXISTS epg_programs")
-	_, err = tx.Exec(`CREATE TABLE epg_programs (
-		id TEXT PRIMARY KEY,
-		channel_id TEXT NOT NULL,
-		title TEXT NOT NULL,
-		description TEXT,
-		start_time DATETIME NOT NULL,
-		end_time DATETIME NOT NULL,
-		poster_url TEXT
-	)`)
+	// Clear old guide data for this specific source
+	_, err = tx.Exec("DELETE FROM epg_programs WHERE source_id = ?", sourceID)
 	if err != nil {
-		return fmt.Errorf("recreate epg_programs failed: %w", err)
+		return fmt.Errorf("failed to clear old epg_programs: %w", err)
 	}
 
-	stmt, err := tx.Prepare("INSERT INTO epg_programs (id, channel_id, title, description, start_time, end_time, poster_url) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT INTO epg_programs (id, source_id, channel_id, title, description, start_time, end_time, poster_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
@@ -988,7 +1147,7 @@ func syncEPGSource(xmltvURL string) error {
 			}
 
 			progID := uuid.New().String()
-			_, err = stmt.Exec(progID, matchedChanID, prog.Title, prog.Description, prog.StartTime.UTC().Format(time.RFC3339), prog.EndTime.UTC().Format(time.RFC3339), prog.PosterURL)
+			_, err = stmt.Exec(progID, sourceID, matchedChanID, prog.Title, prog.Description, prog.StartTime.UTC().Format(time.RFC3339), prog.EndTime.UTC().Format(time.RFC3339), prog.PosterURL)
 			if err != nil {
 				return fmt.Errorf("constraint error on channel_id=%s: %w", matchedChanID, err)
 			}
@@ -1223,7 +1382,6 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 			"-c:v", "copy",
 			"-c:a", "copy",
 			"-f", "rtsp", "-rtsp_transport", "tcp", "-pkt_size", "1200", fmt.Sprintf("rtsp://127.0.0.1:8554/hls_%s", id),
-
 		}
 	} else {
 		// Resilient Intel VAAPI hardware pipeline for dirty OTA MPEG-TS feeds.
@@ -1348,6 +1506,22 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"hls_url": mediaMTXUrl,
 	})
+}
+
+// HeartbeatStream updates the session's LastAccessed time to keep it alive.
+func HeartbeatStream(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+
+	hlsSessionsMu.Lock()
+	defer hlsSessionsMu.Unlock()
+
+	sess, exists := hlsSessions[id]
+	if exists {
+		sess.LastAccessed = time.Now()
+		writeJSON(w, http.StatusOK, map[string]string{"status": "heartbeat received"})
+	} else {
+		writeError(w, http.StatusNotFound, "session not found")
+	}
 }
 
 // StopHLSStream forces a transcoding session to terminate early.

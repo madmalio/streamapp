@@ -38,6 +38,12 @@ func InitDB(dbPath string) (*sql.DB, error) {
 			name TEXT NOT NULL,
 			FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
 		);`,
+		`CREATE TABLE IF NOT EXISTS epg_sources (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			url TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
 		`CREATE TABLE IF NOT EXISTS channels (
 			id TEXT PRIMARY KEY,
 			playlist_id TEXT NOT NULL,
@@ -53,6 +59,7 @@ func InitDB(dbPath string) (*sql.DB, error) {
 		);`,
 		`CREATE TABLE IF NOT EXISTS epg_programs (
 			id TEXT PRIMARY KEY,
+			source_id TEXT,
 			channel_id TEXT NOT NULL,
 			title TEXT NOT NULL,
 			description TEXT,
@@ -74,6 +81,7 @@ func InitDB(dbPath string) (*sql.DB, error) {
 
 	// Migrations
 	_, _ = db.Exec("ALTER TABLE channels ADD COLUMN is_hidden BOOLEAN DEFAULT 0;")
+	_, _ = db.Exec("ALTER TABLE epg_programs ADD COLUMN source_id TEXT DEFAULT '';")
 	_, _ = db.Exec("ALTER TABLE channels ADD COLUMN guide_number TEXT DEFAULT ''")
 
 	DB = db

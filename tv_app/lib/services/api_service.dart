@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/channel.dart';
 import '../models/epg_program.dart';
+import '../models/playlist.dart';
+import '../models/epg_source.dart';
 
 class HlsStreamSession {
   final String url;
@@ -221,13 +223,101 @@ class ApiService {
   Future<void> stopStream(String id) async {
     try {
       await http.get(Uri.parse('$baseUrl/streams/stop?id=$id')).timeout(const Duration(seconds: 2));
-    } catch (_) {}
+    } catch (e) {
+      print('Failed to stop stream $id: $e');
+    }
+  }
+
+  Future<void> sendHeartbeat(String id) async {
+    try {
+      await http.post(Uri.parse('$baseUrl/streams/heartbeat/$id')).timeout(const Duration(seconds: 2));
+    } catch (e) {
+      print('Failed to send heartbeat for stream $id: $e');
+    }
   }
 
   Future<void> stopAllStreams() async {
     try {
       await http.get(Uri.parse('$baseUrl/streams/stop_all')).timeout(const Duration(seconds: 2));
     } catch (_) {}
+  }
+
+  Future<List<Playlist>> getPlaylists() async {
+    final response = await http.get(Uri.parse('$baseUrl/playlists'));
+    if (response.statusCode == 200) {
+      final List<dynamic> json = jsonDecode(response.body);
+      return json.map((p) => Playlist.fromJson(p)).toList();
+    }
+    throw Exception('Failed to load playlists');
+  }
+
+  Future<void> updatePlaylist(String id, String urlPath, String type, String name) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/playlists/$id'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'url_path': urlPath,
+        'type': type,
+        'name': name,
+      }),
+    ).timeout(const Duration(seconds: 30));
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update playlist: ${response.body}');
+    }
+  }
+
+  Future<void> deletePlaylist(String id) async {
+    final response = await http.delete(Uri.parse('$baseUrl/playlists/$id'));
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete playlist: ${response.body}');
+    }
+  }
+
+  Future<List<EpgSource>> getEpgSources() async {
+    final response = await http.get(Uri.parse('$baseUrl/epg/sources'));
+    if (response.statusCode == 200) {
+      final List<dynamic> json = jsonDecode(response.body);
+      return json.map((s) => EpgSource.fromJson(s)).toList();
+    }
+    throw Exception('Failed to load EPG sources');
+  }
+
+  Future<void> addEpgSource({required String name, required String url}) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/epg/sources'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'name': name, 'url': url}),
+    ).timeout(const Duration(seconds: 10));
+    if (response.statusCode != 201) {
+      throw Exception('Failed to add EPG source: ${response.body}');
+    }
+  }
+
+  Future<void> updateEpgSource(String id, String name, String url) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/epg/sources/$id'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'name': name, 'url': url}),
+    ).timeout(const Duration(seconds: 10));
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update EPG source: ${response.body}');
+    }
+  }
+
+  Future<void> deleteEpgSource(String id) async {
+    final response = await http.delete(Uri.parse('$baseUrl/epg/sources/$id'));
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete EPG source: ${response.body}');
+    }
+  }
+
+  Future<void> syncEpgSource(String id) async {
+    final response = await http.post(Uri.parse('$baseUrl/epg/sources/$id/sync'))
+        .timeout(const Duration(seconds: 180)); // Sync can take a while
+    if (response.statusCode != 200) {
+      throw Exception('Failed to sync EPG source: ${response.body}');
+    }
   }
 
   Future<double> runSpeedTest() async {
