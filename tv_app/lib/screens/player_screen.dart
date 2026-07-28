@@ -61,6 +61,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   bool _isChangingQuality = false;
   bool _isMenuOpen = false;
+  bool _fillVideoToScreen = false;
 
   String _currentBitrate = 'Original';
   String? _activeHlsSessionId;
@@ -749,6 +750,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     await _changeQuality(bitrate, preferFastSwitch: true);
   }
 
+  Widget _buildVideoFitToggleButton() {
+    return IconButton(
+      icon: Icon(_fillVideoToScreen ? Icons.crop : Icons.fit_screen, color: Colors.white),
+      tooltip: _fillVideoToScreen ? 'Fill Screen' : 'Fit Screen',
+      onPressed: () => setState(() => _fillVideoToScreen = !_fillVideoToScreen),
+    );
+  }
+
 
 
   Widget _buildQualityMenu() {
@@ -902,7 +911,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                 children: [
                   Positioned.fill(
                     child: _currentBitrate == 'WebRTC' && _webrtcRenderer != null
-                        ? RTCVideoView(_webrtcRenderer!)
+                        ? RTCVideoView(
+                            _webrtcRenderer!,
+                            objectFit: _fillVideoToScreen
+                                ? RTCVideoViewObjectFit.RTCVideoViewObjectFitCover
+                                : RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
+                          )
                         : MaterialDesktopVideoControlsTheme(
                             normal: MaterialDesktopVideoControlsThemeData(
                               bottomButtonBar: [
@@ -916,6 +930,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                   tooltip: 'Channels',
                                 ),
                                 _buildQualityMenu(),
+                                _buildVideoFitToggleButton(),
                                 const MaterialDesktopFullscreenButton(),
                               ],
                             ),
@@ -931,6 +946,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                   tooltip: 'Channels',
                                 ),
                                 _buildQualityMenu(),
+                                _buildVideoFitToggleButton(),
                                 const MaterialDesktopFullscreenButton(),
                               ],
                             ),
@@ -938,7 +954,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                 ? SizedBox.expand(
                                     child: Video(
                                       controller: controller!,
-                                      fit: _isPlutoChannel ? BoxFit.cover : BoxFit.contain,
+                                      fit: _fillVideoToScreen ? BoxFit.cover : BoxFit.contain,
                                     ),
                                   )
                                 : const SizedBox.expand(),
@@ -1035,6 +1051,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                               onPressed: () => setState(() => _isMenuOpen = !_isMenuOpen),
                               tooltip: 'Channels',
                             ),
+                            _buildVideoFitToggleButton(),
                             _buildQualityMenu(),
                             const SizedBox(width: 24),
                           ],

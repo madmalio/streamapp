@@ -75,6 +75,7 @@ class _GuideScreenState extends State<GuideScreen> {
     setState(() => _isLoading = true);
     try {
       final api = Provider.of<ApiService>(context, listen: false);
+      final appSettings = Provider.of<AppSettings>(context, listen: false);
       final channels = await api.getChannels();
       final playlists = await api.getPlaylists();
       Map<String, ChannelEPG> epg = {};
@@ -87,14 +88,21 @@ class _GuideScreenState extends State<GuideScreen> {
       // Filter out hidden channels and channels without a name
       var filteredChannels = channels.where((c) => c.name.trim().isNotEmpty && !c.isHidden).toList();
 
+      final lastChannelId = appSettings.lastChannelId;
+      final savedFocusedChannel = lastChannelId.isNotEmpty
+          ? filteredChannels.where((c) => c.id == lastChannelId).firstOrNull
+          : null;
+      final existingStillValid = _focusedChannel != null
+          ? filteredChannels.where((c) => c.id == _focusedChannel!.id).firstOrNull
+          : null;
+      final nextFocusedChannel = existingStillValid ?? savedFocusedChannel ?? (filteredChannels.isNotEmpty ? filteredChannels.first : null);
+
       setState(() {
         _playlists = playlists;
         _channels = filteredChannels;
         _epgData = epg;
-        if (_channels.isNotEmpty && _focusedChannel == null) {
-          _focusedChannel = _channels.first;
-          _focusedProgram = _epgData[_channels.first.id.toLowerCase()]?.currentProgram;
-        }
+        _focusedChannel = nextFocusedChannel;
+        _focusedProgram = nextFocusedChannel == null ? null : _epgData[nextFocusedChannel.id.toLowerCase()]?.currentProgram;
         _isLoading = false;
       });
     } catch (e) {
@@ -292,14 +300,15 @@ class _GuideScreenState extends State<GuideScreen> {
     super.dispose();
   }
 
-  Widget _buildFeaturedHero(Channel channel) {
+  Widget _buildFeaturedHero(Channel channel, {required double heroHeight}) {
+    final compactHero = heroHeight < 300;
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 600),
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
       child: Container(
         key: ValueKey('${channel.id}_${_focusedProgram?.id}'),
-        height: 360, // Increased height to prevent overflow
+        height: heroHeight,
         width: double.infinity,
         decoration: BoxDecoration(
           color: const Color(0xFF151515),
@@ -321,10 +330,10 @@ class _GuideScreenState extends State<GuideScreen> {
         child: ClipRRect(
           borderRadius: BorderRadius.zero,
           child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
-            child: Container(
-              padding: const EdgeInsets.all(40),
-              decoration: BoxDecoration(
+                filter: ImageFilter.blur(sigmaX: 5, sigmaY: 5),
+                child: Container(
+                  padding: EdgeInsets.all(compactHero ? 28 : 40),
+                  decoration: BoxDecoration(
                 gradient: LinearGradient(
                   colors: [
                     const Color(0xFF0F0F0F).withOpacity(0.9), 
@@ -346,7 +355,7 @@ class _GuideScreenState extends State<GuideScreen> {
                           borderRadius: BorderRadius.circular(4),
                           child: Image.network(
                             channel.logoUrl,
-                            height: 32,
+                            height: compactHero ? 28 : 32,
                             fit: BoxFit.contain,
                             errorBuilder: (c, e, s) => const SizedBox(),
                           ),
@@ -369,12 +378,12 @@ class _GuideScreenState extends State<GuideScreen> {
                   const SizedBox(height: 10),
                   Text(
                     _focusedProgram?.title ?? channel.name,
-                    style: const TextStyle(
-                      fontSize: 48,
+                    style: TextStyle(
+                      fontSize: compactHero ? 36 : 48,
                       fontWeight: FontWeight.w900,
                       color: Colors.white,
                       letterSpacing: -0.5,
-                      shadows: [Shadow(color: Colors.black54, blurRadius: 10, offset: Offset(0, 4))],
+                      shadows: const [Shadow(color: Colors.black54, blurRadius: 10, offset: Offset(0, 4))],
                     ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -382,12 +391,12 @@ class _GuideScreenState extends State<GuideScreen> {
                   const SizedBox(height: 8),
                   Text(
                     _focusedProgram?.description ?? 'HDHomeRun Network Broadcast',
-                    style: const TextStyle(
-                      fontSize: 18,
+                    style: TextStyle(
+                      fontSize: compactHero ? 16 : 18,
                       color: Colors.white70,
                       fontWeight: FontWeight.w500,
                     ),
-                    maxLines: 2,
+                    maxLines: compactHero ? 1 : 2,
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 15),
@@ -460,187 +469,15 @@ class _GuideScreenState extends State<GuideScreen> {
     );
   }
 
-  String _formatTimeGrid(DateTime time) {
-    final hour = time.hour > 12 ? time.hour - 12 : (time.hour == 0 ? 12 : time.hour);
-    final min = time.minute.toString().padLeft(2, '0');
-    final ampm = time.hour >= 12 ? 'PM' : 'AM';
-    return '$hour:$min $ampm';
-  }
-
-  Widget _buildEpgGrid(String title, List<Channel> gridChannels) {
-    if (gridChannels.isEmpty) return const SizedBox.shrink();
-
-    // Determine the timeline bounds based on now.
-    final now = DateTime.now();
-    // Align to the previous 30-minute mark
-    final startOfTimeline = DateTime(now.year, now.month, now.day, now.hour, now.minute < 30 ? 0 : 30);
-    // Show 4 hours
-    final endOfTimeline = startOfTimeline.add(const Duration(hours: 4));
-    
-    // We need a pixel per minute scale. E.g., 10 pixels per minute. 30 mins = 300px.
-    const double pixelsPerMinute = 10.0;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(left: 10, bottom: 10),
-          child: Text(
-            title,
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.white, letterSpacing: 0.5),
-          ),
-        ),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Pinned Left Column (Channel Logos)
-            SizedBox(
-              width: 140,
-              child: Column(
-                children: [
-                  const SizedBox(height: 30), // Match the timeline header height
-                  ...gridChannels.map((chan) {
-                    return Container(
-                      height: 90,
-                      margin: const EdgeInsets.only(bottom: 12, left: 10, right: 10),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1A1A1A),
-                        borderRadius: BorderRadius.zero,
-                      ),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          chan.logoUrl.isNotEmpty
-                              ? Image.network(
-                                  chan.logoUrl,
-                                  width: 80,
-                                  height: 40,
-                                  fit: BoxFit.contain,
-                                  errorBuilder: (context, error, stackTrace) => SizedBox(
-                                    width: 80,
-                                    height: 40,
-                                    child: Center(
-                                      child: Text(
-                                        chan.name,
-                                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
-                                        textAlign: TextAlign.center,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                  ),
-                                )
-                              : SizedBox(
-                                  width: 80,
-                                  height: 40,
-                                  child: Center(
-                                    child: Text(
-                                      chan.name,
-                                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
-                                      textAlign: TextAlign.center,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                ),
-                          if (chan.guideNumber.isNotEmpty) const SizedBox(height: 4),
-                          if (chan.guideNumber.isNotEmpty)
-                            Text(
-                              chan.guideNumber,
-                              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.white54),
-                            ),
-                        ],
-                      ),
-                    );
-                  }),
-                ],
-              ),
-            ),
-            
-            // Scrollable Timeline + Programs
-            Expanded(
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                clipBehavior: Clip.none,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Timeline Header
-                    Container(
-                      height: 30,
-                      padding: const EdgeInsets.only(bottom: 5),
-                      child: Row(
-                        children: List.generate(8, (index) { // 8 half-hours = 4 hours
-                          final time = startOfTimeline.add(Duration(minutes: index * 30));
-                          final formatted = _formatTimeGrid(time);
-                          return SizedBox(
-                            width: 30 * pixelsPerMinute,
-                            child: Text(
-                              formatted,
-                              style: const TextStyle(color: Colors.white54, fontWeight: FontWeight.bold, fontSize: 16),
-                            ),
-                          );
-                        }),
-                      ),
-                    ),
-                    
-                    // Program Rows
-                    ...gridChannels.map((chan) {
-                      final epg = _epgData[chan.id.toLowerCase()];
-                      final programs = epg?.programs ?? [];
-                      
-                      return Container(
-                        height: 90,
-                        width: 4 * 60 * pixelsPerMinute, // 4 hours total width
-                        margin: const EdgeInsets.only(bottom: 12),
-                        child: Stack(
-                          clipBehavior: Clip.none,
-                          children: programs.map((p) {
-                            var pStart = p.startTime;
-                            var pEnd = p.endTime;
-                            
-                            if (pStart.isBefore(startOfTimeline)) pStart = startOfTimeline;
-                            if (pEnd.isAfter(endOfTimeline)) pEnd = endOfTimeline;
-                            
-                            if (pEnd.isBefore(startOfTimeline) || pStart.isAfter(endOfTimeline)) {
-                              return const SizedBox.shrink(); // Outside view
-                            }
-
-                            final offsetMinutes = pStart.difference(startOfTimeline).inMinutes;
-                            final durationMinutes = pEnd.difference(pStart).inMinutes;
-                            
-                            final leftOffset = offsetMinutes * pixelsPerMinute;
-                            final width = durationMinutes * pixelsPerMinute;
-                            
-                            final isNow = !now.isBefore(p.startTime) && now.isBefore(p.endTime);
-                            
-                            return Positioned(
-                              left: leftOffset,
-                              width: width - 4, // 4px spacing between blocks
-                              height: 90,
-                              child: EpgProgramBlock(
-                                program: p,
-                                channel: chan,
-                                isNowPlaying: isNow,
-                                onFocus: _onChannelFocus,
-                                onPlay: () {
-                                  if (isNow) {
-                                    _openChannel(chan);
-                                  } else {
-                                    _showRecordModal(p);
-                                  }
-                                },
-                              ),
-                            );
-                          }).toList(),
-                        ),
-                      );
-                    }),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ],
+  Widget _buildEpgGrid(String title, List<Channel> gridChannels, {required double availableHeight}) {
+    return _StickyEpgGrid(
+      title: title,
+      gridChannels: gridChannels,
+      epgData: _epgData,
+      availableHeight: availableHeight,
+      onFocus: _onChannelFocus,
+      onOpenChannel: _openChannel,
+      onRecordProgram: _showRecordModal,
     );
   }
 
@@ -648,6 +485,14 @@ class _GuideScreenState extends State<GuideScreen> {
   Widget build(BuildContext context) {
     final hasFavorites = _channels.any((c) => c.isFavorite);
     final tabCount = _playlists.isEmpty ? 1 : _playlists.length;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final heroHeight = screenHeight >= 1200
+        ? 320.0
+        : screenHeight >= 980
+            ? 280.0
+            : 240.0;
+    const tabBarHeight = 50.0;
+    final guideViewportHeight = (screenHeight - (heroHeight + tabBarHeight) - 40.0).clamp(260.0, 2000.0).toDouble();
     
     return DefaultTabController(
       length: tabCount,
@@ -671,13 +516,13 @@ class _GuideScreenState extends State<GuideScreen> {
                             top: 0,
                             left: 0,
                             right: 0,
-                            height: 360,
-                            child: _buildFeaturedHero(_focusedChannel!),
+                            height: heroHeight,
+                            child: _buildFeaturedHero(_focusedChannel!, heroHeight: heroHeight),
                           ),
                         
                         // Sticky TabBar below hero
                         Positioned(
-                          top: 360,
+                          top: heroHeight,
                           left: 40,
                           right: 40,
                           child: TabBar(
@@ -693,7 +538,7 @@ class _GuideScreenState extends State<GuideScreen> {
                         
                         // Scrollable Guide beneath the TabBar
                         Positioned.fill(
-                          top: 410, // 360 hero + 50 tabbar
+                          top: heroHeight + tabBarHeight,
                           child: TabBarView(
                             children: _playlists.isEmpty
                                 ? [
@@ -716,8 +561,7 @@ class _GuideScreenState extends State<GuideScreen> {
                                               crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
                                                 if (hasFavorites) _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
-                                                _buildEpgGrid('Live TV Guide', _channels),
-                                                const SizedBox(height: 40),
+                                                _buildEpgGrid('Live TV Guide', _channels, availableHeight: guideViewportHeight),
                                               ],
                                             ),
                                           ],
@@ -748,8 +592,8 @@ class _GuideScreenState extends State<GuideScreen> {
                                               children: [
                                                 if (tunerChannels.any((c) => c.isFavorite))
                                                   _buildChannelRow('Favorites', tunerChannels.where((c) => c.isFavorite).toList()),
-                                                if (tunerChannels.isNotEmpty) _buildEpgGrid('${p.name} Guide', tunerChannels),
-                                                const SizedBox(height: 40),
+                                                if (tunerChannels.isNotEmpty)
+                                                  _buildEpgGrid('${p.name} Guide', tunerChannels, availableHeight: guideViewportHeight),
                                               ],
                                             ),
                                           ],
@@ -830,6 +674,388 @@ class _GuideScreenState extends State<GuideScreen> {
       ),
     );
   }
+}
+
+class _StickyEpgGrid extends StatefulWidget {
+  final String title;
+  final List<Channel> gridChannels;
+  final Map<String, ChannelEPG> epgData;
+  final double availableHeight;
+  final void Function(Channel, {EPGProgram? program}) onFocus;
+  final ValueChanged<Channel> onOpenChannel;
+  final ValueChanged<EPGProgram> onRecordProgram;
+
+  const _StickyEpgGrid({
+    required this.title,
+    required this.gridChannels,
+    required this.epgData,
+    required this.availableHeight,
+    required this.onFocus,
+    required this.onOpenChannel,
+    required this.onRecordProgram,
+  });
+
+  @override
+  State<_StickyEpgGrid> createState() => _StickyEpgGridState();
+}
+
+class _StickyEpgGridState extends State<_StickyEpgGrid> {
+  static const double _pixelsPerMinute = 10.0;
+  static const double _rowHeight = 90.0;
+  static const double _rowGap = 12.0;
+  static const double _timelineHeight = 30.0;
+
+  final ScrollController _horizontalController = ScrollController();
+  final ScrollController _leftVerticalController = ScrollController();
+  final ScrollController _rightVerticalController = ScrollController();
+
+  Timer? _nowLineTimer;
+  bool _syncingLeft = false;
+  bool _syncingRight = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _leftVerticalController.addListener(_syncVerticalFromLeft);
+    _rightVerticalController.addListener(_syncVerticalFromRight);
+    _nowLineTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) {
+        setState(() {});
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _nowLineTimer?.cancel();
+    _leftVerticalController.removeListener(_syncVerticalFromLeft);
+    _rightVerticalController.removeListener(_syncVerticalFromRight);
+    _horizontalController.dispose();
+    _leftVerticalController.dispose();
+    _rightVerticalController.dispose();
+    super.dispose();
+  }
+
+  void _syncVerticalFromLeft() {
+    if (_syncingLeft || !_rightVerticalController.hasClients || !_leftVerticalController.hasClients) {
+      return;
+    }
+    _syncingRight = true;
+    final target = _leftVerticalController.offset.clamp(
+      0.0,
+      _rightVerticalController.position.maxScrollExtent,
+    );
+    _rightVerticalController.jumpTo(target);
+    _syncingRight = false;
+  }
+
+  void _syncVerticalFromRight() {
+    if (_syncingRight || !_leftVerticalController.hasClients || !_rightVerticalController.hasClients) {
+      return;
+    }
+    _syncingLeft = true;
+    final target = _rightVerticalController.offset.clamp(
+      0.0,
+      _leftVerticalController.position.maxScrollExtent,
+    );
+    _leftVerticalController.jumpTo(target);
+    _syncingLeft = false;
+  }
+
+  String _formatTimeGrid(DateTime time) {
+    final hour = time.hour > 12 ? time.hour - 12 : (time.hour == 0 ? 12 : time.hour);
+    final min = time.minute.toString().padLeft(2, '0');
+    final ampm = time.hour >= 12 ? 'PM' : 'AM';
+    return '$hour:$min $ampm';
+  }
+
+  List<_TimelineSegment> _buildTimelineSegments({
+    required List<EPGProgram> programs,
+    required DateTime startOfTimeline,
+    required DateTime endOfTimeline,
+  }) {
+    final sorted = [...programs]..sort((a, b) => a.startTime.compareTo(b.startTime));
+    final segments = <_TimelineSegment>[];
+    var cursor = startOfTimeline;
+
+    for (final p in sorted) {
+      var pStart = p.startTime;
+      var pEnd = p.endTime;
+
+      if (pStart.isBefore(startOfTimeline)) pStart = startOfTimeline;
+      if (pEnd.isAfter(endOfTimeline)) pEnd = endOfTimeline;
+      if (!pEnd.isAfter(pStart)) continue;
+
+      if (pStart.isAfter(cursor)) {
+        segments.add(_TimelineSegment(start: cursor, end: pStart));
+      }
+
+      segments.add(_TimelineSegment(start: pStart, end: pEnd, program: p));
+      if (pEnd.isAfter(cursor)) cursor = pEnd;
+    }
+
+    if (cursor.isBefore(endOfTimeline)) {
+      segments.add(_TimelineSegment(start: cursor, end: endOfTimeline));
+    }
+
+    if (segments.isEmpty) {
+      segments.add(_TimelineSegment(start: startOfTimeline, end: endOfTimeline));
+    }
+
+    return segments;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.gridChannels.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final now = DateTime.now();
+    final startOfTimeline = DateTime(now.year, now.month, now.day, now.hour, now.minute < 30 ? 0 : 30);
+    final endOfTimeline = startOfTimeline.add(const Duration(hours: 4));
+    final totalMinutes = endOfTimeline.difference(startOfTimeline).inMinutes.toDouble();
+    final timelineWidth = totalMinutes * _pixelsPerMinute;
+    final halfHourSlots = (totalMinutes / 30).round();
+
+    final rowsViewportHeight = (widget.availableHeight - 44.0).clamp(220.0, 2000.0).toDouble();
+
+    final nowOffsetMinutes = now.difference(startOfTimeline).inSeconds / 60.0;
+    final showNowLine = nowOffsetMinutes >= 0 && nowOffsetMinutes <= totalMinutes;
+    final nowLineLeft = nowOffsetMinutes * _pixelsPerMinute;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 10, bottom: 10),
+          child: Text(
+            widget.title,
+            style: const TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 140,
+              child: Column(
+                children: [
+                  const SizedBox(height: _timelineHeight),
+                  SizedBox(
+                    height: rowsViewportHeight,
+                    child: ListView.separated(
+                      controller: _leftVerticalController,
+                      itemCount: widget.gridChannels.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: _rowGap),
+                      itemBuilder: (context, index) {
+                        final chan = widget.gridChannels[index];
+                        return Container(
+                          height: _rowHeight,
+                          margin: const EdgeInsets.symmetric(horizontal: 10),
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF1A1A1A),
+                            borderRadius: BorderRadius.zero,
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              chan.logoUrl.isNotEmpty
+                                  ? Image.network(
+                                      chan.logoUrl,
+                                      width: 80,
+                                      height: 40,
+                                      fit: BoxFit.contain,
+                                      errorBuilder: (context, error, stackTrace) => SizedBox(
+                                        width: 80,
+                                        height: 40,
+                                        child: Center(
+                                          child: Text(
+                                            chan.name,
+                                            style: const TextStyle(
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.white,
+                                            ),
+                                            textAlign: TextAlign.center,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      ),
+                                    )
+                                  : SizedBox(
+                                      width: 80,
+                                      height: 40,
+                                      child: Center(
+                                        child: Text(
+                                          chan.name,
+                                          style: const TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.white,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ),
+                              if (chan.guideNumber.isNotEmpty) const SizedBox(height: 4),
+                              if (chan.guideNumber.isNotEmpty)
+                                Text(
+                                  chan.guideNumber,
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white54,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                controller: _horizontalController,
+                scrollDirection: Axis.horizontal,
+                clipBehavior: Clip.none,
+                child: SizedBox(
+                  width: timelineWidth,
+                  child: Stack(
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            height: _timelineHeight,
+                            child: Row(
+                              children: List.generate(halfHourSlots, (index) {
+                                final time = startOfTimeline.add(Duration(minutes: index * 30));
+                                final formatted = _formatTimeGrid(time);
+                                return SizedBox(
+                                  width: 30 * _pixelsPerMinute,
+                                  child: Text(
+                                    formatted,
+                                    style: const TextStyle(
+                                      color: Colors.white54,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                );
+                              }),
+                            ),
+                          ),
+                          SizedBox(
+                            height: rowsViewportHeight,
+                            child: ListView.separated(
+                              controller: _rightVerticalController,
+                              itemCount: widget.gridChannels.length,
+                              separatorBuilder: (_, __) => const SizedBox(height: _rowGap),
+                              itemBuilder: (context, index) {
+                                final chan = widget.gridChannels[index];
+                                final epg = widget.epgData[chan.id.toLowerCase()];
+                                final programs = epg?.programs ?? <EPGProgram>[];
+                                final segments = _buildTimelineSegments(
+                                  programs: programs,
+                                  startOfTimeline: startOfTimeline,
+                                  endOfTimeline: endOfTimeline,
+                                );
+
+                                return SizedBox(
+                                  height: _rowHeight,
+                                  width: timelineWidth,
+                                  child: Stack(
+                                    clipBehavior: Clip.none,
+                                    children: segments.map((segment) {
+                                      final offsetMinutes = segment.start.difference(startOfTimeline).inMinutes;
+                                      final durationMinutes = segment.end.difference(segment.start).inMinutes;
+                                      final leftOffset = offsetMinutes * _pixelsPerMinute;
+                                      final width = durationMinutes * _pixelsPerMinute;
+
+                                      if (segment.program == null) {
+                                        return Positioned(
+                                          left: leftOffset,
+                                          width: width,
+                                          height: _rowHeight,
+                                          child: Container(
+                                            color: const Color(0xFF131313),
+                                          ),
+                                        );
+                                      }
+
+                                      final program = segment.program!;
+                                      final isNow = !now.isBefore(program.startTime) && now.isBefore(program.endTime);
+
+                                      return Positioned(
+                                        left: leftOffset,
+                                        width: width - 4,
+                                        height: _rowHeight,
+                                        child: EpgProgramBlock(
+                                          program: program,
+                                          channel: chan,
+                                          isNowPlaying: isNow,
+                                          onFocus: widget.onFocus,
+                                          onPlay: () {
+                                            if (isNow) {
+                                              widget.onOpenChannel(chan);
+                                            } else {
+                                              widget.onRecordProgram(program);
+                                            }
+                                          },
+                                        ),
+                                      );
+                                    }).toList(),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (showNowLine)
+                        Positioned(
+                          left: nowLineLeft,
+                          top: 0,
+                          bottom: 0,
+                          child: IgnorePointer(
+                            child: Container(
+                              width: 2,
+                              color: Colors.redAccent.withOpacity(0.9),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _TimelineSegment {
+  final DateTime start;
+  final DateTime end;
+  final EPGProgram? program;
+
+  const _TimelineSegment({
+    required this.start,
+    required this.end,
+    this.program,
+  });
 }
 
 class ChannelCard extends StatefulWidget {
@@ -1046,43 +1272,50 @@ class _EpgProgramBlockState extends State<EpgProgramBlock> {
         onExit: (_) => setState(() => _isHovered = false),
         child: GestureDetector(
           onTap: widget.onPlay,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: active 
-                ? Colors.blueAccent.withOpacity(0.9)
-                : (widget.isNowPlaying ? const Color(0xFF2A2A2A) : const Color(0xFF1E1E1E)),
-              borderRadius: BorderRadius.zero,
-              border: Border.all(
-                color: active ? Colors.white : Colors.white.withOpacity(0.05),
-                width: active ? 2 : 1,
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  widget.program.title,
-                  style: TextStyle(
-                    color: active ? Colors.white : Colors.white.withOpacity(0.9),
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '${_formatTime(widget.program.startTime)} - ${_formatTime(widget.program.endTime)}',
-                  style: TextStyle(
-                    color: active ? Colors.white70 : Colors.white54,
-                    fontSize: 14,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final showTime = active;
+              return AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: active
+                      ? Colors.blueAccent.withOpacity(0.9)
+                      : (widget.isNowPlaying ? const Color(0xFF2A2A2A) : const Color(0xFF1E1E1E)),
+                  borderRadius: BorderRadius.zero,
+                  border: Border.all(
+                    color: active ? Colors.white : Colors.white.withOpacity(0.05),
+                    width: active ? 2 : 1,
                   ),
                 ),
-              ],
-            ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      widget.program.title,
+                      style: TextStyle(
+                        color: active ? Colors.white : Colors.white.withOpacity(0.9),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                      maxLines: showTime ? 1 : 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (showTime) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        '${_formatTime(widget.program.startTime)} - ${_formatTime(widget.program.endTime)}',
+                        style: TextStyle(
+                          color: active ? Colors.white70 : Colors.white54,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              );
+            },
           ),
         ),
       ),
