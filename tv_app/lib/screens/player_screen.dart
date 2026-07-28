@@ -82,7 +82,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   DateTime? _plutoLastRecoveryAt;
   DateTime? _plutoRecoveryCooldownUntil;
   DateTime? _plutoRecoveryStartedAt;
-  DateTime? _plutoRecoveryNoticeUntil;
   DateTime? _plutoStallSince;
   bool _plutoHardRecoveryTried = false;
   int _plutoRecoveryCount = 0;
@@ -349,7 +348,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _plutoLastRecoveryAt = null;
     _plutoRecoveryCooldownUntil = null;
     _plutoRecoveryStartedAt = null;
-    _plutoRecoveryNoticeUntil = null;
     _plutoStallSince = null;
     _plutoHardRecoveryTried = false;
     _plutoRecoveryCount = 0;
@@ -440,7 +438,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _plutoRecoveryInProgress = true;
     _plutoSafeBufferMode = true;
     _plutoRecoveryStartedAt = now;
-    _plutoRecoveryNoticeUntil = now.add(const Duration(seconds: 3));
 
     try {
       final stallLongEnough =
@@ -832,10 +829,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
-    final showRecoveryNotice = _isPlutoChannel &&
-        (_plutoRecoveryInProgress ||
-            (_plutoRecoveryNoticeUntil != null && DateTime.now().isBefore(_plutoRecoveryNoticeUntil!)));
-
     return WillPopScope(
       onWillPop: () async {
         // 1. Immediately cut audio/video playback
@@ -952,24 +945,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                           ),
                   ),
 
-                  if (showRecoveryNotice)
-                    Positioned(
-                      top: 84,
-                      left: 24,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.72),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: Colors.white24),
-                        ),
-                        child: const Text(
-                          'Re-syncing stream...',
-                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
-                        ),
-                      ),
-                    ),
-                 
+
                 // Animated Header
                 AnimatedPositioned(
                   duration: const Duration(milliseconds: 300),

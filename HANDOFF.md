@@ -30,20 +30,25 @@
   - Implemented `AutomaticKeepAliveClientMixin` for the `TabBar` views to persist guide renderings in memory.
   - Used an `IndexedStack` for the sidebar's Channels/Guide toggle, instantly switching between them without re-rendering.
 - **Pluto TV & Native Playback Testing:**
-  - Exhaustively tested `media_kit`'s ability to play Pluto TV HLS streams natively (Direct Route, bypassing backend).
-  - Attempted to bypass 403 Forbidden errors by hardcoding Firefox `User-Agent` into the internal `libmpv` demuxer via the `http-header-fields` property.
-  - Attempted to bypass Windows D3D11VA hardware decoder crashes on SSAI ad-resolution changes by forcing software decoding (`hwdec=no`).
-  - Attempted to bypass `libmpv` HLS timeline deadlocks by writing a Go backend proxy (`/api/proxy/m3u8`) that fetched and dynamically scrubbed all `subtitle.vtt` references from the M3U8 master playlist before passing it to Flutter.
-  - **Result**: Even with all workarounds applied natively, `media_kit` still spins endlessly on the Pluto TV streams.
-- **UI Updates**: Added a Closed Caption (CC) toggle button directly into the `media_kit_video` `MaterialDesktopVideoControlsThemeData` bottom control bar.
+  - Confirmed direct `jmp2.uk/plu-...m3u8` playback can fail in-app due to redirect/relative-URL handling and subtitle-track edge cases.
+  - Added backend playlist proxy endpoint `GET /api/proxy/m3u8?url=...&best=1` to normalize master playlists before Flutter opens them:
+    - Strips subtitle track declarations (`#EXT-X-MEDIA:TYPE=SUBTITLES`).
+    - Rewrites relative variant URLs to absolute URLs using the final redirected base URL.
+    - Supports `best=1` to retain only the highest-bandwidth variant.
+  - Updated Flutter Pluto route in `player_screen.dart` to always resolve Pluto-like URLs through `/api/proxy/m3u8?...&best=1&t=<cache-bust>`.
+  - Applied Pluto-specific native player properties:
+    - Browser-like headers (`User-Agent`, `Referer`, `Origin`).
+    - `hwdec=no` to avoid D3D11VA crashes during ad-driven resolution changes.
+    - `sid=no` and `sub-auto=no` to prevent subtitle deadlocks.
+    - `hls-bitrate=max` and tuned cache/readahead profile.
+  - Added automatic Pluto stall detection/recovery (buffering + no-progress monitor), cooldowns, and single-flight generation guards to prevent surf/recovery race crashes.
+  - Removed custom on-screen "Re-syncing stream..." badge per user request; native media_kit spinner is now the only recovery UI.
 
 ## Current Problem (End of Session)
-- **Pluto TV Direct Playback Fails**: `media_kit` has been proven fundamentally incapable of natively playing the chaotic, ad-stitched Pluto TV M3U8 links directly.
-- **The Fork in the Road**: The user must make a final architectural decision on how to handle external IPTV streams:
-  1. **Backend Transcoding**: Use the backend to transcode the Pluto TV stream (forcing a locked resolution and single video track). This prevents `media_kit` from crashing, but burns CPU and compresses quality.
-  2. **VLC Engine Swap**: Completely replace `media_kit` with `flutter_vlc_player` for IPTV streams (since VLC natively handles Pluto's ads and subtitles perfectly). This requires rebuilding all player UI controls from scratch.
+- **Status**: Pluto direct playback in-app is now working decently through the proxy + stabilization path.
+- **Known Tradeoffs**: Quality can still appear below VLC in some scenes, occasional behind-live drift can appear, and some ad transitions may still require automatic hard recovery.
 
 ## Next Steps (Recommended)
-1. Ask the user which path they want to take (Transcode vs VLC).
-2. If they choose Backend Transcoding, ensure the backend extracts the 1080p variant using the newly written `getBestHlsVariant` parser, and optimize the Intel VAAPI transcoder for maximum bitrate.
-3. If they choose VLC, import `flutter_vlc_player` and begin drafting the custom overlay UI.
+1. Run a short Pluto soak test (channel changes + ad breaks) and track freeze count/hour, recovery time, and crash count.
+2. Keep current direct-play baseline; tune only one Pluto variable at a time if needed.
+3. Continue the user's higher-priority GStreamer practical evaluation while preserving FFmpeg fallback.
