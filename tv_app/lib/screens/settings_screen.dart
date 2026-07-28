@@ -163,6 +163,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _syncTuner(Playlist tuner) async {
+    setState(() => _isSaving = true);
+    try {
+      await context.read<ApiService>().syncPlaylist(tuner.id);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${tuner.name} synced!'), backgroundColor: Colors.green));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error syncing ${tuner.name}: $e'), backgroundColor: Colors.red));
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
   Future<void> _deleteTuner(Playlist tuner) async {
     final confirm = await showDialog<bool>(
       context: context,
@@ -566,6 +578,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
+                                IconButton(
+                                  icon: const Icon(Icons.sync, color: Colors.blueAccent),
+                                  onPressed: () => _syncTuner(t),
+                                ),
                                 IconButton(
                                   icon: const Icon(Icons.edit, color: Colors.white70),
                                   onPressed: () => _editTuner(t),

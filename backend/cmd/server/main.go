@@ -93,8 +93,9 @@ func main() {
 		// Streaming Endpoints
 		api.Get("/streams/play", handlers.PlayStream)
 		api.Get("/streams/start", handlers.StartHLSStream)
-		api.Get("/streams/stop", handlers.StopHLSStream)
 		api.Post("/streams/heartbeat/{id}", handlers.HeartbeatStream)
+		api.Get("/proxy/m3u8", handlers.ProxyM3U8)
+		api.Get("/streams/stop", handlers.StopHLSStream)
 		api.Get("/streams/stop_all", handlers.StopAllStreams)
 		api.Get("/streams/hls/{id}/*", handlers.ServeHLSSegments)
 	})

@@ -251,6 +251,16 @@ class ApiService {
     throw Exception('Failed to load playlists');
   }
 
+  Future<void> syncPlaylist(String id) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/playlists/$id/sync'),
+    ).timeout(const Duration(minutes: 2));
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to sync playlist: ${response.body}');
+    }
+  }
+
   Future<void> updatePlaylist(String id, String urlPath, String type, String name) async {
     final response = await http.put(
       Uri.parse('$baseUrl/playlists/$id'),

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
@@ -33,6 +32,9 @@ class PlayerScreen extends StatefulWidget {
 }
 
 class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver {
+  static const String _browserUserAgent =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
   Player? player;
   VideoController? controller;
   
@@ -72,6 +74,25 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   
   bool _controlsVisible = true;
   Timer? _hideControlsTimer;
+  Timer? _plutoMonitorTimer;
+  bool _plutoMonitorBusy = false;
+  bool _openingInProgress = false;
+  bool _plutoRecoveryInProgress = false;
+  bool _plutoSafeBufferMode = false;
+  DateTime? _plutoLastRecoveryAt;
+  DateTime? _plutoRecoveryCooldownUntil;
+  DateTime? _plutoRecoveryStartedAt;
+  DateTime? _plutoRecoveryNoticeUntil;
+  DateTime? _plutoStallSince;
+  bool _plutoHardRecoveryTried = false;
+  int _plutoRecoveryCount = 0;
+  int _plutoRecoveryTotalMs = 0;
+  DateTime? _plutoOpenStartedAt;
+  DateTime? _lastSurfAt;
+  int _playbackGeneration = 0;
+  Duration _plutoLastPosition = Duration.zero;
+  DateTime? _plutoLastProgressAt;
+  DateTime? _plutoBufferingSince;
 
   final List<String> _qualityOptions = [
     'Auto',
@@ -102,6 +123,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _epgTimer = Timer.periodic(const Duration(minutes: 1), (_) => _fetchCurrentProgram());
     _speedTestTimer = Timer.periodic(const Duration(minutes: 10), (_) => _api.primeAutoRecommendation());
     _startHideControlsTimer();
+    _startPlutoPlaybackMonitor();
   }
 
   Future<void> _initAndBootstrap() async {
@@ -116,6 +138,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _epgTimer?.cancel();
     _speedTestTimer?.cancel();
     _hideControlsTimer?.cancel();
+    _plutoMonitorTimer?.cancel();
     _heartbeatTimer?.cancel();
     _volumeSubscription?.cancel();
     
@@ -157,6 +180,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> _surfToChannel(Channel nextChannel) async {
     if (_currentChannel.id == nextChannel.id) return;
+
+    final now = DateTime.now();
+    if (_isPlutoChannel &&
+        _lastSurfAt != null &&
+        now.difference(_lastSurfAt!) < const Duration(milliseconds: 900)) {
+      return;
+    }
+    _lastSurfAt = now;
     
     // Clean up current stream gracefully
     await player?.stop();
@@ -178,6 +209,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       _currentProgram = null;
       _isChangingQuality = false;
     });
+    _playbackGeneration += 1;
+    _resetPlutoMonitorState();
 
     _fetchCurrentProgram();
     _bootstrapPlayback();
@@ -203,44 +236,232 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     );
   }
 
-  Future<void> _openAndForcePlay(String url) async {
+  Future<void> _openAndForcePlay(String url, {bool isRecovery = false}) async {
     if (player == null) return;
-    
-    final isTranscodedHls = url.contains('.m3u8') && url.contains('192.168.');
-    
-    // For transcoded HLS streams, we open them paused so the player caches data ahead
-    // of the playhead. This ensures a thick buffer before playback begins.
-    await player!.open(Media(url), play: !isTranscodedHls);
-    
-    if (isTranscodedHls) {
-      // Build a 2.5-second deep buffer of LL-HLS chunks before starting the playhead
-      await Future<void>.delayed(const Duration(milliseconds: 2500));
-      if (mounted && player != null && player!.platform != null) {
-        try {
-          await player!.play();
-        } catch (_) {}
+    if (_openingInProgress) {
+      return;
+    }
+
+    _openingInProgress = true;
+    final openGeneration = _playbackGeneration;
+    _plutoOpenStartedAt = DateTime.now();
+
+    try {
+      await _configureNativeLowLatencyProfile();
+
+      final playbackUrl = await _resolvePlaybackUrl(url);
+      if (!mounted || openGeneration != _playbackGeneration) {
+        return;
       }
+    
+      final isTranscodedHls = RegExp(r'/hls_[^/]+/index\.m3u8').hasMatch(playbackUrl);
+    
+      // For transcoded HLS streams, we open them paused so the player caches data ahead
+      // of the playhead. This ensures a thick buffer before playback begins.
+      await player!.open(
+        Media(
+          playbackUrl,
+          httpHeaders: const {
+            'User-Agent': _browserUserAgent,
+            'Referer': 'https://pluto.tv/',
+            'Origin': 'https://pluto.tv',
+          },
+        ),
+        play: !isTranscodedHls,
+      );
+
+      if (!mounted || openGeneration != _playbackGeneration) {
+        return;
+      }
+    
+      if (isTranscodedHls) {
+        // Build a 2.5-second deep buffer of LL-HLS chunks before starting the playhead
+        await Future<void>.delayed(const Duration(milliseconds: 2500));
+        if (mounted && player != null && player!.platform != null) {
+          try {
+            await player!.play();
+          } catch (_) {}
+        }
+      } else {
+        // For Original streams (SRT/Direct HTTP), play immediately and aggressively
+        if (mounted && player != null && player!.platform != null) {
+          try {
+            await player!.play();
+          } catch (_) {}
+        }
+        if (!isRecovery) {
+          unawaited(
+            Future<void>.delayed(const Duration(milliseconds: 350), () async {
+              if (mounted && player != null && player!.platform != null && !player!.state.playing) {
+                try { await player!.play(); } catch (_) {}
+              }
+            }),
+          );
+          unawaited(
+            Future<void>.delayed(const Duration(milliseconds: 900), () async {
+              if (mounted && player != null && player!.platform != null && !player!.state.playing) {
+                try { await player!.play(); } catch (_) {}
+              }
+            }),
+          );
+        }
+      }
+    } finally {
+      _openingInProgress = false;
+    }
+  }
+
+  Future<String> _resolvePlaybackUrl(String url) async {
+    final lowerUrl = url.toLowerCase();
+    final isJmp2Pluto = lowerUrl.contains('jmp2.uk/plu-') && lowerUrl.contains('.m3u8');
+    if (!isJmp2Pluto) {
+      return url;
+    }
+
+    final proxyUrl =
+        '${_api.baseUrl}/proxy/m3u8?url=${Uri.encodeComponent(url)}&best=1&t=${DateTime.now().millisecondsSinceEpoch}';
+    debugPrint('Resolved Pluto URL: $proxyUrl');
+    return proxyUrl;
+  }
+
+  bool get _isPlutoChannel {
+    final lower = _currentChannel.streamUrl.toLowerCase();
+    return lower.contains('jmp2.uk/plu-') || lower.contains('pluto.tv');
+  }
+
+  void _startPlutoPlaybackMonitor() {
+    _plutoMonitorTimer?.cancel();
+    _plutoMonitorTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (_plutoMonitorBusy || !mounted || player == null) return;
+      _plutoMonitorBusy = true;
+      try {
+        await _checkPlutoPlaybackHealth();
+      } finally {
+        _plutoMonitorBusy = false;
+      }
+    });
+  }
+
+  void _resetPlutoMonitorState() {
+    _plutoBufferingSince = null;
+    _plutoLastProgressAt = null;
+    _plutoLastPosition = Duration.zero;
+    _plutoLastRecoveryAt = null;
+    _plutoRecoveryCooldownUntil = null;
+    _plutoRecoveryStartedAt = null;
+    _plutoRecoveryNoticeUntil = null;
+    _plutoStallSince = null;
+    _plutoHardRecoveryTried = false;
+    _plutoRecoveryCount = 0;
+    _plutoRecoveryTotalMs = 0;
+    _plutoRecoveryInProgress = false;
+    _plutoSafeBufferMode = false;
+    _plutoOpenStartedAt = null;
+  }
+
+  Future<void> _checkPlutoPlaybackHealth() async {
+    if (!_isPlutoChannel || player == null) {
+      _resetPlutoMonitorState();
+      return;
+    }
+
+    if (_openingInProgress) {
+      return;
+    }
+
+    final now = DateTime.now();
+    if (_plutoOpenStartedAt != null && now.difference(_plutoOpenStartedAt!) < const Duration(seconds: 8)) {
+      return;
+    }
+
+    final state = player!.state;
+    final position = state.position;
+
+    if (_plutoLastProgressAt == null) {
+      _plutoLastProgressAt = now;
+      _plutoLastPosition = position;
+    } else if (position != _plutoLastPosition) {
+      _plutoLastPosition = position;
+      _plutoLastProgressAt = now;
+      if (_plutoRecoveryStartedAt != null) {
+        final recoveredMs = now.difference(_plutoRecoveryStartedAt!).inMilliseconds;
+        _plutoRecoveryCount += 1;
+        _plutoRecoveryTotalMs += recoveredMs;
+        final avgMs = _plutoRecoveryTotalMs ~/ _plutoRecoveryCount;
+        debugPrint('Pluto recovered in ${recoveredMs}ms (avg ${avgMs}ms over $_plutoRecoveryCount recoveries)');
+        _plutoRecoveryStartedAt = null;
+      }
+      _plutoStallSince = null;
+      _plutoHardRecoveryTried = false;
+    }
+
+    if (state.buffering) {
+      _plutoBufferingSince ??= now;
     } else {
-      // For Original streams (SRT/Direct HTTP), play immediately and aggressively
-      if (mounted && player != null && player!.platform != null) {
-        try {
-          await player!.play();
-        } catch (_) {}
+      _plutoBufferingSince = null;
+    }
+
+    final stalledByBuffering =
+        _plutoBufferingSince != null && now.difference(_plutoBufferingSince!) >= const Duration(seconds: 2);
+    final stalledByNoProgress = state.playing &&
+        _plutoLastProgressAt != null &&
+        now.difference(_plutoLastProgressAt!) >= const Duration(seconds: 3);
+
+    if ((stalledByBuffering && stalledByNoProgress) && !_plutoRecoveryInProgress) {
+      _plutoStallSince ??= now;
+      await _recoverPlutoPlayback();
+      return;
+    }
+
+    if (!(stalledByBuffering && stalledByNoProgress)) {
+      _plutoStallSince = null;
+      _plutoHardRecoveryTried = false;
+    }
+
+    if (_plutoSafeBufferMode &&
+        _plutoLastRecoveryAt != null &&
+        now.difference(_plutoLastRecoveryAt!) >= const Duration(seconds: 45) &&
+        !state.buffering &&
+        state.playing) {
+      _plutoSafeBufferMode = false;
+      await _configureNativeLowLatencyProfile();
+      debugPrint('Pluto profile: returned to low-latency mode');
+    }
+  }
+
+  Future<void> _recoverPlutoPlayback() async {
+    if (_plutoRecoveryInProgress || _openingInProgress || !mounted) return;
+
+    final now = DateTime.now();
+    if (_plutoRecoveryCooldownUntil != null && now.isBefore(_plutoRecoveryCooldownUntil!)) {
+      return;
+    }
+
+    _plutoRecoveryInProgress = true;
+    _plutoSafeBufferMode = true;
+    _plutoRecoveryStartedAt = now;
+    _plutoRecoveryNoticeUntil = now.add(const Duration(seconds: 3));
+
+    try {
+      final stallLongEnough =
+          _plutoStallSince != null && now.difference(_plutoStallSince!) >= const Duration(seconds: 2);
+      if (!_plutoHardRecoveryTried && stallLongEnough) {
+        _plutoHardRecoveryTried = true;
+        _playbackGeneration += 1;
+        await _openAndForcePlay(_currentStreamUrl, isRecovery: true);
+        _plutoBufferingSince = null;
+        _plutoLastProgressAt = DateTime.now();
+        _plutoLastRecoveryAt = DateTime.now();
+        _plutoRecoveryCooldownUntil = DateTime.now().add(const Duration(seconds: 8));
+        debugPrint('Pluto stall hard-recover');
+      } else {
+        _plutoRecoveryStartedAt = null;
       }
-      unawaited(
-        Future<void>.delayed(const Duration(milliseconds: 350), () async {
-          if (mounted && player != null && player!.platform != null && !player!.state.playing) {
-            try { await player!.play(); } catch (_) {}
-          }
-        }),
-      );
-      unawaited(
-        Future<void>.delayed(const Duration(milliseconds: 900), () async {
-          if (mounted && player != null && player!.platform != null && !player!.state.playing) {
-            try { await player!.play(); } catch (_) {}
-          }
-        }),
-      );
+    } catch (_) {
+      // Keep playback resilient; next monitor cycle can retry if needed.
+      _plutoRecoveryStartedAt = null;
+    } finally {
+      _plutoRecoveryInProgress = false;
     }
   }
 
@@ -264,18 +485,35 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     try {
       if (player?.platform is! NativePlayer) return;
       final nativePlayer = player!.platform as NativePlayer;
+      final isPlutoLike = _isPlutoChannel;
 
-      // Re-enable the cache to allow the player to build up a buffer ahead of time.
-      // This adds a slight delay to the stream but drastically reduces buffering stalls.
       await nativePlayer.setProperty('cache', 'yes');
-      await nativePlayer.setProperty('demuxer-max-bytes', '32M');
-      await nativePlayer.setProperty('demuxer-max-back-bytes', '16M');
-      await nativePlayer.setProperty('demuxer-readahead-secs', '4');
+      if (isPlutoLike) {
+        if (_plutoSafeBufferMode) {
+          await nativePlayer.setProperty('demuxer-max-bytes', '18M');
+          await nativePlayer.setProperty('demuxer-max-back-bytes', '6M');
+          await nativePlayer.setProperty('demuxer-readahead-secs', '2.0');
+        } else {
+          await nativePlayer.setProperty('demuxer-max-bytes', '6M');
+          await nativePlayer.setProperty('demuxer-max-back-bytes', '1M');
+          await nativePlayer.setProperty('demuxer-readahead-secs', '0.35');
+        }
+      } else {
+        await nativePlayer.setProperty('demuxer-max-bytes', '32M');
+        await nativePlayer.setProperty('demuxer-max-back-bytes', '16M');
+        await nativePlayer.setProperty('demuxer-readahead-secs', '4');
+      }
       
       await nativePlayer.setProperty('video-sync', 'audio');
-      await nativePlayer.setProperty('hwdec', 'auto');
+      await nativePlayer.setProperty('hwdec', isPlutoLike ? 'no' : 'auto');
       await nativePlayer.setProperty('network-timeout', '10');
-      await nativePlayer.setProperty('http-header-fields', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+      await nativePlayer.setProperty('http-header-fields', 'User-Agent: $_browserUserAgent,Referer: https://pluto.tv/,Origin: https://pluto.tv');
+      await nativePlayer.setProperty('referrer', 'https://pluto.tv/');
+      await nativePlayer.setProperty('sid', isPlutoLike ? 'no' : 'auto');
+      await nativePlayer.setProperty('sub-auto', isPlutoLike ? 'no' : 'fuzzy');
+      await nativePlayer.setProperty('hls-bitrate', isPlutoLike ? 'max' : 'no');
+      await nativePlayer.setProperty('scale', 'bilinear');
+      await nativePlayer.setProperty('cscale', 'bilinear');
     } catch (e) {
       debugPrint('Player parameters not applied: $e');
     }
@@ -594,6 +832,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
+    final showRecoveryNotice = _isPlutoChannel &&
+        (_plutoRecoveryInProgress ||
+            (_plutoRecoveryNoticeUntil != null && DateTime.now().isBefore(_plutoRecoveryNoticeUntil!)));
+
     return WillPopScope(
       onWillPop: () async {
         // 1. Immediately cut audio/video playback
@@ -663,47 +905,71 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
               onTap: _startHideControlsTimer,
               onPanDown: (_) => _startHideControlsTimer(),
               child: Stack(
+                fit: StackFit.expand,
                 children: [
-                  Center(
-                child: _currentBitrate == 'WebRTC' && _webrtcRenderer != null
-                    ? RTCVideoView(_webrtcRenderer!)
-                    : MaterialDesktopVideoControlsTheme(
-                        normal: MaterialDesktopVideoControlsThemeData(
-                          bottomButtonBar: [
-                            const MaterialPlayOrPauseButton(),
-                            const MaterialPositionIndicator(),
-                            const Spacer(),
-                            const MaterialDesktopVolumeButton(),
-                            IconButton(
-                              icon: const Icon(Icons.list, color: Colors.white),
-                              onPressed: () => setState(() => _isMenuOpen = !_isMenuOpen),
-                              tooltip: 'Channels',
+                  Positioned.fill(
+                    child: _currentBitrate == 'WebRTC' && _webrtcRenderer != null
+                        ? RTCVideoView(_webrtcRenderer!)
+                        : MaterialDesktopVideoControlsTheme(
+                            normal: MaterialDesktopVideoControlsThemeData(
+                              bottomButtonBar: [
+                                const MaterialPlayOrPauseButton(),
+                                const MaterialPositionIndicator(),
+                                const Spacer(),
+                                const MaterialDesktopVolumeButton(),
+                                IconButton(
+                                  icon: const Icon(Icons.list, color: Colors.white),
+                                  onPressed: () => setState(() => _isMenuOpen = !_isMenuOpen),
+                                  tooltip: 'Channels',
+                                ),
+                                _buildQualityMenu(),
+                                const MaterialDesktopFullscreenButton(),
+                              ],
                             ),
-                            _buildQualityMenu(),
-                            const MaterialDesktopFullscreenButton(),
-                          ],
-                        ),
-                        fullscreen: MaterialDesktopVideoControlsThemeData(
-                          bottomButtonBar: [
-                            const MaterialPlayOrPauseButton(),
-                            const MaterialPositionIndicator(),
-                            const Spacer(),
-                            const MaterialDesktopVolumeButton(),
-                            IconButton(
-                              icon: const Icon(Icons.list, color: Colors.white),
-                              onPressed: () => setState(() => _isMenuOpen = !_isMenuOpen),
-                              tooltip: 'Channels',
+                            fullscreen: MaterialDesktopVideoControlsThemeData(
+                              bottomButtonBar: [
+                                const MaterialPlayOrPauseButton(),
+                                const MaterialPositionIndicator(),
+                                const Spacer(),
+                                const MaterialDesktopVolumeButton(),
+                                IconButton(
+                                  icon: const Icon(Icons.list, color: Colors.white),
+                                  onPressed: () => setState(() => _isMenuOpen = !_isMenuOpen),
+                                  tooltip: 'Channels',
+                                ),
+                                _buildQualityMenu(),
+                                const MaterialDesktopFullscreenButton(),
+                              ],
                             ),
-                            _buildQualityMenu(),
-                            const MaterialDesktopFullscreenButton(),
-                          ],
+                            child: controller != null
+                                ? SizedBox.expand(
+                                    child: Video(
+                                      controller: controller!,
+                                      fit: _isPlutoChannel ? BoxFit.cover : BoxFit.contain,
+                                    ),
+                                  )
+                                : const SizedBox.expand(),
+                          ),
+                  ),
+
+                  if (showRecoveryNotice)
+                    Positioned(
+                      top: 84,
+                      left: 24,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.72),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.white24),
                         ),
-                      child: controller != null
-                          ? Video(controller: controller!)
-                          : const SizedBox(),
+                        child: const Text(
+                          'Re-syncing stream...',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                        ),
+                      ),
                     ),
-                ),
-                
+                 
                 // Animated Header
                 AnimatedPositioned(
                   duration: const Duration(milliseconds: 300),

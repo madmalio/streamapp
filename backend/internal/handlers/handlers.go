@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -729,6 +730,221 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	})
 }
 
+// getBestHlsVariant fetches an HLS master playlist, parses it, and returns the variant URL with the highest BANDWIDTH.
+func getBestHlsVariant(masterUrl string) string {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0")
+			return nil
+		},
+	}
+
+	req, err := http.NewRequest("GET", masterUrl, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+
+	lines := strings.Split(string(body), "\n")
+	var bestUrl string
+	var maxBandwidth int
+
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(line, "#EXT-X-STREAM-INF:") {
+			parts := strings.Split(line, ",")
+			bw := 0
+			for _, p := range parts {
+				if strings.HasPrefix(p, "BANDWIDTH=") || strings.Contains(p, "BANDWIDTH=") {
+					bwStr := strings.TrimPrefix(p, "BANDWIDTH=")
+					if idx := strings.Index(bwStr, "="); idx != -1 {
+						bwStr = bwStr[idx+1:]
+					}
+					if parsed, err := strconv.Atoi(bwStr); err == nil {
+						bw = parsed
+					}
+				}
+			}
+			if i+1 < len(lines) {
+				next := strings.TrimSpace(lines[i+1])
+				if next != "" && !strings.HasPrefix(next, "#") {
+					if bw >= maxBandwidth {
+						maxBandwidth = bw
+						bestUrl = next
+					}
+				}
+			}
+		}
+	}
+
+	if bestUrl != "" {
+		if !strings.HasPrefix(bestUrl, "http") {
+			base, err := url.Parse(resp.Request.URL.String())
+			if err == nil {
+				ref, err := url.Parse(bestUrl)
+				if err == nil {
+					return base.ResolveReference(ref).String()
+				}
+			}
+		}
+		return bestUrl
+	}
+	return ""
+}
+
+// ProxyM3U8 acts as a lightweight proxy for HLS master playlists.
+// It fetches the remote playlist and strips out any SUBTITLES lines,
+// ensuring the client player never attempts to load broken subtitle tracks.
+func ProxyM3U8(w http.ResponseWriter, r *http.Request) {
+	targetUrl := r.URL.Query().Get("url")
+	if targetUrl == "" {
+		writeError(w, http.StatusBadRequest, "url parameter is required")
+		return
+	}
+	preferBest := strings.EqualFold(r.URL.Query().Get("best"), "1") ||
+		strings.EqualFold(r.URL.Query().Get("best"), "true")
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0")
+			return nil
+		},
+	}
+
+	req, err := http.NewRequest("GET", targetUrl, nil)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to create request")
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to fetch playlist")
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to read playlist")
+		return
+	}
+
+	// Parse and clean the playlist
+	lines := strings.Split(string(body), "\n")
+	var cleanedLines []string
+
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+
+		// Skip dedicated subtitle variant entries entirely
+		if strings.HasPrefix(line, "#EXT-X-MEDIA:TYPE=SUBTITLES") {
+			continue
+		}
+
+		// If it's a stream definition, strip the SUBTITLES="subs" parameter
+		if strings.HasPrefix(line, "#EXT-X-STREAM-INF:") {
+			parts := strings.Split(line, ",")
+			var newParts []string
+			for _, p := range parts {
+				if !strings.HasPrefix(strings.TrimSpace(p), "SUBTITLES=") {
+					newParts = append(newParts, p)
+				}
+			}
+			line = strings.Join(newParts, ",")
+			
+			// We MUST convert relative variant URLs to absolute URLs because
+			// the client is reading this playlist from our localhost proxy, not the remote server!
+			cleanedLines = append(cleanedLines, line)
+			if i+1 < len(lines) {
+				nextLine := strings.TrimSpace(lines[i+1])
+				if nextLine != "" && !strings.HasPrefix(nextLine, "#") {
+					if !strings.HasPrefix(nextLine, "http") {
+						base, err := url.Parse(resp.Request.URL.String())
+						if err == nil {
+							ref, err := url.Parse(nextLine)
+							if err == nil {
+								nextLine = base.ResolveReference(ref).String()
+							}
+						}
+					}
+					cleanedLines = append(cleanedLines, nextLine)
+					i++ // Skip the next line in the outer loop since we just processed it
+				}
+			}
+			continue
+		}
+
+		// Pass through everything else
+		if line != "" {
+			cleanedLines = append(cleanedLines, line)
+		}
+	}
+
+	if preferBest {
+		maxBandwidth := -1
+		bestInfo := ""
+		bestURL := ""
+		baseLines := make([]string, 0, len(cleanedLines))
+
+		for i := 0; i < len(cleanedLines); i++ {
+			line := cleanedLines[i]
+			if strings.HasPrefix(line, "#EXT-X-STREAM-INF:") {
+				bandwidth := 0
+				for _, part := range strings.Split(line, ",") {
+					piece := strings.TrimSpace(part)
+					if strings.HasPrefix(piece, "BANDWIDTH=") {
+						bwStr := strings.TrimPrefix(piece, "BANDWIDTH=")
+						if parsed, err := strconv.Atoi(bwStr); err == nil {
+							bandwidth = parsed
+						}
+						break
+					}
+				}
+
+				if i+1 < len(cleanedLines) {
+					next := strings.TrimSpace(cleanedLines[i+1])
+					if next != "" && !strings.HasPrefix(next, "#") {
+						if bandwidth >= maxBandwidth {
+							maxBandwidth = bandwidth
+							bestInfo = line
+							bestURL = next
+						}
+						i++
+						continue
+					}
+				}
+			}
+
+			if !strings.HasPrefix(line, "#EXT-X-MEDIA:") {
+				baseLines = append(baseLines, line)
+			}
+		}
+
+		if bestInfo != "" && bestURL != "" {
+			cleanedLines = append(baseLines, bestInfo, bestURL)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(strings.Join(cleanedLines, "\n") + "\n"))
+}
+
 func hlsBufsizeFromBitrate(bitrate string) string {
 	trimmed := strings.TrimSpace(strings.ToLower(bitrate))
 	if trimmed == "" {
@@ -866,6 +1082,7 @@ func syncM3U(pID, urlPath string) error {
 
 	// Clear old data
 	_, _ = tx.Exec("DELETE FROM channel_groups WHERE playlist_id = ?", pID)
+	_, _ = tx.Exec("DELETE FROM channels WHERE playlist_id = ?", pID)
 
 	groupMap := make(map[string]string)
 	for _, ch := range channels {
@@ -883,7 +1100,7 @@ func syncM3U(pID, urlPath string) error {
 		}
 	}
 
-	stmt, err := tx.Prepare("INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT OR REPLACE INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
@@ -900,7 +1117,8 @@ func syncM3U(pID, urlPath string) error {
 		if ch.IsHidden {
 			isHiddenInt = 1
 		}
-		_, err = stmt.Exec(ch.ID, pID, gID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt)
+		uniqueChID := pID + "-" + ch.ID
+		_, err = stmt.Exec(uniqueChID, pID, gID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt)
 		if err != nil {
 			return err
 		}
@@ -924,6 +1142,7 @@ func syncXtream(pID, urlPath, username, password string) error {
 	defer tx.Rollback()
 
 	_, _ = tx.Exec("DELETE FROM channel_groups WHERE playlist_id = ?", pID)
+	_, _ = tx.Exec("DELETE FROM channels WHERE playlist_id = ?", pID)
 
 	groupStmt, err := tx.Prepare("INSERT INTO channel_groups (id, playlist_id, name) VALUES (?, ?, ?)")
 	if err != nil {
@@ -938,7 +1157,7 @@ func syncXtream(pID, urlPath, username, password string) error {
 		}
 	}
 
-	chanStmt, err := tx.Prepare("INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	chanStmt, err := tx.Prepare("INSERT OR REPLACE INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
@@ -950,7 +1169,8 @@ func syncXtream(pID, urlPath, username, password string) error {
 		if ch.IsHidden {
 			isHiddenInt = 1
 		}
-		_, err = chanStmt.Exec(ch.ID, pID, ch.GroupID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt)
+		uniqueChID := pID + "-" + ch.ID
+		_, err = chanStmt.Exec(uniqueChID, pID, ch.GroupID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt)
 		if err != nil {
 			return err
 		}
@@ -974,6 +1194,7 @@ func syncHDHomeRun(pID, urlPath string) error {
 	defer tx.Rollback()
 
 	_, _ = tx.Exec("DELETE FROM channel_groups WHERE playlist_id = ?", pID)
+	_, _ = tx.Exec("DELETE FROM channels WHERE playlist_id = ?", pID)
 
 	gID := uuid.New().String()
 	_, err = tx.Exec("INSERT INTO channel_groups (id, playlist_id, name) VALUES (?, ?, ?)", gID, pID, "HDHomeRun")
@@ -981,7 +1202,7 @@ func syncHDHomeRun(pID, urlPath string) error {
 		return err
 	}
 
-	stmt, err := tx.Prepare("INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT OR REPLACE INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
@@ -993,7 +1214,8 @@ func syncHDHomeRun(pID, urlPath string) error {
 		if ch.IsHidden {
 			isHiddenInt = 1
 		}
-		_, err = stmt.Exec(ch.ID, pID, gID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt)
+		uniqueChID := pID + "-" + ch.ID
+		_, err = stmt.Exec(uniqueChID, pID, gID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt)
 		if err != nil {
 			return err
 		}
@@ -1232,8 +1454,16 @@ func killProcessGracefully(cmd *exec.Cmd, cancel context.CancelFunc) {
 func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	streamURL := r.URL.Query().Get("url")
 	if streamURL == "" {
-		writeError(w, http.StatusBadRequest, "url parameter is required")
+		writeError(w, http.StatusBadRequest, "Stream URL is empty")
 		return
+	}
+
+	// For external HLS streams (e.g. Pluto TV), ffmpeg defaults to the first variant (often 360p).
+	// We parse the master playlist and extract the highest-bandwidth variant URL to force 1080p.
+	if strings.Contains(streamURL, ".m3u8") && !strings.Contains(streamURL, "192.168.") {
+		if bestUrl := getBestHlsVariant(streamURL); bestUrl != "" {
+			streamURL = bestUrl
+		}
 	}
 
 	bitrate := r.URL.Query().Get("bitrate")
@@ -1371,16 +1601,17 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	} else if transmux {
 		// Transmux mode: copy source codecs into HLS-TS segments (no re-encode).
 		args = []string{
+			"-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 			"-fflags", "+genpts",
 			"-err_detect", "ignore_err",
 			"-analyzeduration", analyzeDuration,
 			"-probesize", probeSize,
 			"-i", streamURL,
-			"-map", "0:v:0",
-			"-map", "0:a:0?",
 			"-sn",
 			"-c:v", "copy",
-			"-c:a", "copy",
+			"-c:a", "aac",
+			"-b:a", "128k",
+			"-ac", "2",
 			"-f", "rtsp", "-rtsp_transport", "tcp", "-pkt_size", "1200", fmt.Sprintf("rtsp://127.0.0.1:8554/hls_%s", id),
 		}
 	} else {
@@ -1392,13 +1623,12 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 
 		args = []string{
 			"-vaapi_device", vaapiDevice,
+			"-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 			"-fflags", "+genpts",
 			"-err_detect", "ignore_err",
 			"-analyzeduration", analyzeDuration,
 			"-probesize", probeSize,
 			"-i", streamURL,
-			"-map", "0:v:0",
-			"-map", "0:a:0?",
 			"-sn",
 			"-vf", "sidedata=mode=delete,format=nv12,hwupload,deinterlace_vaapi=rate=frame:auto=1",
 			"-c:v", "h264_vaapi",
