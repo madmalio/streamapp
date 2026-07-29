@@ -42,6 +42,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   RTCPeerConnection? _peerConnection;
 
   late Channel _currentChannel;
+  Channel? _previousChannel;
+  String? _previousChannelId;
   late String _currentStreamUrl;
   EPGProgram? _currentProgram;
   Map<String, ChannelEPG>? _liveEpg;
@@ -183,18 +185,26 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
   }
 
-  Future<void> _surfToChannel(Channel nextChannel) async {
+  Future<void> _surfToChannel(
+    Channel nextChannel, {
+    bool bypassSwitchDebounce = false,
+    bool forceSwitch = false,
+  }) async {
     if (_currentChannel.id == nextChannel.id || _channelSwitchInProgress) return;
-    if (_plutoRecoveryInProgress || _openingInProgress) return;
+    if (!forceSwitch && (_plutoRecoveryInProgress || _openingInProgress)) return;
 
     final now = DateTime.now();
-    if (_lastManualSwitchAt != null &&
+    if (!forceSwitch &&
+        !bypassSwitchDebounce &&
+        _lastManualSwitchAt != null &&
         now.difference(_lastManualSwitchAt!) < const Duration(milliseconds: 1200)) {
       return;
     }
     _lastManualSwitchAt = now;
 
-    if (_isPlutoChannel &&
+    if (!forceSwitch &&
+        !bypassSwitchDebounce &&
+        _isPlutoChannel &&
         _lastSurfAt != null &&
         now.difference(_lastSurfAt!) < const Duration(milliseconds: 900)) {
       return;
@@ -237,7 +247,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       }
 
       if (!mounted) return;
+      final oldChannel = _currentChannel;
       setState(() {
+        _previousChannel = oldChannel;
+        _previousChannelId = oldChannel.id;
         _currentChannel = nextChannel;
         _currentStreamUrl = nextChannel.streamUrl;
         _currentProgram = null;
@@ -886,6 +899,29 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     await _changeQuality(bitrate, preferFastSwitch: true);
   }
 
+  Future<void> _returnToPreviousChannel() async {
+    Channel? previous;
+    if (_previousChannelId != null) {
+      previous = widget.channels.where((c) => c.id == _previousChannelId).firstOrNull;
+    }
+    previous ??= _previousChannel;
+    if (previous == null) return;
+    if (_channelSwitchInProgress) return;
+    if (previous.id == _currentChannel.id) return;
+    await _surfToChannel(previous, bypassSwitchDebounce: true, forceSwitch: true);
+  }
+
+  Widget _buildLastChannelButton() {
+    final hasPrevious =
+        (_previousChannelId != null && _previousChannelId != _currentChannel.id) ||
+        (_previousChannel != null && _previousChannel!.id != _currentChannel.id);
+    return IconButton(
+      icon: Icon(Icons.swap_horiz, color: hasPrevious ? Colors.white : Colors.white38),
+      tooltip: 'Last Channel',
+      onPressed: hasPrevious ? _returnToPreviousChannel : null,
+    );
+  }
+
   Widget _buildVideoFitToggleButton() {
     return IconButton(
       icon: Icon(_fillVideoToScreen ? Icons.crop : Icons.fit_screen, color: Colors.white),
@@ -1098,6 +1134,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                   onPressed: () => setState(() => _isMenuOpen = !_isMenuOpen),
                                   tooltip: 'Channels',
                                 ),
+                                _buildLastChannelButton(),
                                 _buildQualityMenu(),
                                 _buildVideoFitToggleButton(),
                                 const MaterialDesktopFullscreenButton(),
@@ -1114,6 +1151,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                   onPressed: _openFullscreenChannelsMenu,
                                   tooltip: 'Channels',
                                 ),
+                                _buildLastChannelButton(),
                                 _buildQualityMenu(),
                                 _buildVideoFitToggleButton(),
                                 const MaterialDesktopFullscreenButton(),
@@ -1220,6 +1258,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                               onPressed: () => setState(() => _isMenuOpen = !_isMenuOpen),
                               tooltip: 'Channels',
                             ),
+                            _buildLastChannelButton(),
                             _buildVideoFitToggleButton(),
                             _buildQualityMenu(),
                             const SizedBox(width: 24),

@@ -49,12 +49,14 @@
   - Removed custom on-screen "Re-syncing stream..." badge per user request; native media_kit spinner is now the only recovery UI.
   - Desktop fullscreen channel menu now opens via modal in fullscreen and keeps side-panel behavior in windowed mode.
   - Channel management screen now separates channels by tuner/source via tabs instead of a single long list.
+  - Added session-only "Last Channel" controls in `player_screen.dart`, but current implementation is still not switching reliably.
 
 ## Current Problem (End of Session)
 - **Status**: Pluto and multiple external providers (including Tubi and Plex) now work through proxy-only external HLS routing with noticeably better quality on many channels.
-- **Known Tradeoffs**: Some provider channels may still be dead/upstream-broken, and ad-to-ad Pluto transitions can still trigger recovery in edge cases.
+- **Known Tradeoffs**: Some provider channels may still be dead/upstream-broken, ad-to-ad Pluto transitions can still trigger recovery in edge cases, and the session-only Last Channel button is still unreliable.
 
 ## Next Steps (Recommended)
 1. Run short soak tests across Pluto, Plex, and Tubi (channel changes during ad windows) and track crash count + recovery count.
 2. Keep proxy-only external HLS baseline; if a provider fails, inspect new resolver/proxy logs before changing playback policy.
-3. Continue the user's higher-priority GStreamer practical evaluation while preserving FFmpeg fallback.
+3. Fix session-only Last Channel return in `player_screen.dart` so the button reliably toggles to the previous channel.
+4. Continue the user's higher-priority GStreamer practical evaluation while preserving FFmpeg fallback.

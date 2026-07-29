@@ -19,3 +19,4 @@
 - **Plex Endpoint Handling**: Treat Plex `epg.provider.plex.tv/library/parts/...` endpoints as proxy candidates even when URL does not include `.m3u8`; some channels expose HLS behind non-`.m3u8` URLs.
 - **Proxy Parsing Guardrail**: `ProxyM3U8` must detect true HLS by content (`Content-Type` and `#EXTM3U`) and pass through non-HLS bodies safely instead of forcing playlist transforms.
 - **Pluto Player Guardrails**: For Pluto-like channels in `player_screen.dart`, keep browser-like headers (`User-Agent`, `Referer`, `Origin`), force `hwdec=no`, disable subtitle auto-loading (`sid=no`, `sub-auto=no`), and keep automatic stall detection/recovery enabled. Do not re-introduce custom recovery UI badges; rely on the native player spinner.
+- **Last Channel Return Status**: Session-only last-channel return controls were added in `player_screen.dart`, but the button is still not switching reliably. Treat this as an open issue and do not consider the feature complete yet.
