@@ -35,7 +35,24 @@ class _TunerTabState extends State<_TunerTab> with AutomaticKeepAliveClientMixin
   }
 }
 
-class _GuideScreenState extends State<GuideScreen> {
+int _getCategoryOrder(String category) {
+  const order = [
+    'Entertainment',
+    'Movies',
+    'News',
+    'Sports',
+    'Comedy',
+    'Kids',
+    'Documentary',
+    'Crime & Mystery',
+    'Music',
+    'Local',
+  ];
+  final index = order.indexOf(category);
+  return index == -1 ? 999 : index;
+}
+
+class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin {
   static const bool _prewarmEnabled = false;
 
 
@@ -51,6 +68,8 @@ class _GuideScreenState extends State<GuideScreen> {
   String? _activePrewarmSessionId;
   int _prewarmToken = 0;
   DateTime? _lastPrewarmAt;
+  TabController? _tabController;
+  String? _selectedCategory;
 
   @override
   void initState() {
@@ -88,14 +107,14 @@ class _GuideScreenState extends State<GuideScreen> {
       // Filter out hidden channels and channels without a name
       var filteredChannels = channels.where((c) => c.name.trim().isNotEmpty && !c.isHidden).toList();
 
-      final lastChannelId = appSettings.lastChannelId;
-      final savedFocusedChannel = lastChannelId.isNotEmpty
-          ? filteredChannels.where((c) => c.id == lastChannelId).firstOrNull
-          : null;
-      final existingStillValid = _focusedChannel != null
-          ? filteredChannels.where((c) => c.id == _focusedChannel!.id).firstOrNull
-          : null;
-      final nextFocusedChannel = existingStillValid ?? savedFocusedChannel ?? (filteredChannels.isNotEmpty ? filteredChannels.first : null);
+      Channel? nextFocusedChannel;
+      if (playlists.isNotEmpty) {
+        final firstPlaylistChannels = filteredChannels.where((c) => c.playlistId == playlists.first.id).toList();
+        if (firstPlaylistChannels.isNotEmpty) {
+          nextFocusedChannel = firstPlaylistChannels.first;
+        }
+      }
+      nextFocusedChannel ??= (filteredChannels.isNotEmpty ? filteredChannels.first : null);
 
       setState(() {
         _playlists = playlists;
@@ -105,9 +124,35 @@ class _GuideScreenState extends State<GuideScreen> {
         _focusedProgram = nextFocusedChannel == null ? null : _epgData[nextFocusedChannel.id.toLowerCase()]?.currentProgram;
         _isLoading = false;
       });
+
+      _initTabController();
     } catch (e) {
       setState(() => _isLoading = false);
       // Handled simply for now
+    }
+  }
+
+  void _initTabController() {
+    _tabController?.dispose();
+    final tabCount = _playlists.isEmpty ? 1 : _playlists.length;
+    _tabController = TabController(length: tabCount, vsync: this);
+    _tabController!.addListener(_onTabChanged);
+  }
+
+  void _onTabChanged() {
+    if (_tabController!.indexIsChanging) return;
+    
+    setState(() {
+      _selectedCategory = null;
+    });
+
+    if (_playlists.isEmpty) return;
+    
+    final selectedPlaylist = _playlists[_tabController!.index];
+    final tunerChannels = _channels.where((c) => c.playlistId == selectedPlaylist.id).toList();
+    
+    if (tunerChannels.isNotEmpty) {
+      _onChannelFocus(tunerChannels.first, program: _epgData[tunerChannels.first.id.toLowerCase()]?.currentProgram);
     }
   }
 
@@ -282,6 +327,7 @@ class _GuideScreenState extends State<GuideScreen> {
 
   @override
   void dispose() {
+    _tabController?.dispose();
     _prewarmTimer?.cancel();
     unawaited(_releaseActivePrewarm());
     super.dispose();
@@ -456,15 +502,71 @@ class _GuideScreenState extends State<GuideScreen> {
     );
   }
 
-  Widget _buildEpgGrid(String title, List<Channel> gridChannels, {required double availableHeight}) {
+  List<Widget> _buildGroupedChannelRows(List<Channel> channelsList, {required String fallbackGroupName}) {
+    if (channelsList.isEmpty) return const [];
+    
+    final Map<String, List<Channel>> groups = {};
+    for (var c in channelsList) {
+      final groupName = (c.normalizedCategory.isNotEmpty) ? c.normalizedCategory : fallbackGroupName;
+      groups.putIfAbsent(groupName, () => []).add(c);
+    }
+
+    if (groups.length <= 1) {
+      return const [];
+    }
+
+    final sortedKeys = groups.keys.toList()..sort((a, b) {
+      if (a == fallbackGroupName || a == 'Other') return 1;
+      if (b == fallbackGroupName || b == 'Other') return -1;
+      final orderA = _getCategoryOrder(a);
+      final orderB = _getCategoryOrder(b);
+      if (orderA != orderB) return orderA.compareTo(orderB);
+      return a.compareTo(b);
+    });
+
+    final List<Widget> rows = [];
+    for (var key in sortedKeys) {
+      rows.add(_buildChannelRow(key, groups[key]!));
+    }
+    return rows;
+  }
+
+  Widget _buildEpgGrid(String title, List<Channel> gridChannels, {required double availableHeight, required String fallbackGroupName}) {
+    final Map<String, List<Channel>> groups = {};
+    for (var c in gridChannels) {
+      final groupName = (c.normalizedCategory.isNotEmpty) ? c.normalizedCategory : fallbackGroupName;
+      groups.putIfAbsent(groupName, () => []).add(c);
+    }
+
+    final sortedCategories = groups.keys.toList()..sort((a, b) {
+      if (a == fallbackGroupName || a == 'Other') return 1;
+      if (b == fallbackGroupName || b == 'Other') return -1;
+      final orderA = _getCategoryOrder(a);
+      final orderB = _getCategoryOrder(b);
+      if (orderA != orderB) return orderA.compareTo(orderB);
+      return a.compareTo(b);
+    });
+
+    List<Channel> displayedChannels = gridChannels;
+    if (_selectedCategory != null && _selectedCategory != 'All Channels') {
+      displayedChannels = groups[_selectedCategory!] ?? [];
+    }
+
     return _StickyEpgGrid(
       title: title,
-      gridChannels: gridChannels,
+      gridChannels: displayedChannels,
       epgData: _epgData,
       availableHeight: availableHeight,
       onFocus: _onChannelFocus,
       onOpenChannel: _openChannel,
       onRecordProgram: _showRecordModal,
+      categories: groups.length > 1 ? sortedCategories : [],
+      selectedCategory: _selectedCategory ?? 'All Channels',
+      onCategoryChanged: (String? newCategory) {
+        setState(() {
+          _selectedCategory = newCategory;
+        });
+      },
     );
   }
 
@@ -481,11 +583,16 @@ class _GuideScreenState extends State<GuideScreen> {
     const tabBarHeight = 50.0;
     final guideViewportHeight = (screenHeight - (heroHeight + tabBarHeight) - 40.0).clamp(260.0, 2000.0).toDouble();
     
-    return DefaultTabController(
-      length: tabCount,
-      child: Scaffold(
-        backgroundColor: const Color(0xFF0F0F0F),
-        body: Stack(
+    if (_isLoading || _tabController == null) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF0F0F0F),
+        body: Center(child: CircularProgressIndicator(color: Colors.blueAccent)),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F0F0F),
+      body: Stack(
           children: [
             // Main Content Area (Positioned behind the sidebar)
             Positioned(
@@ -513,6 +620,7 @@ class _GuideScreenState extends State<GuideScreen> {
                           left: 40,
                           right: 40,
                           child: TabBar(
+                            controller: _tabController,
                             isScrollable: true,
                             indicatorColor: Colors.blueAccent,
                             labelColor: Colors.white,
@@ -527,6 +635,7 @@ class _GuideScreenState extends State<GuideScreen> {
                         Positioned.fill(
                           top: heroHeight + tabBarHeight,
                           child: TabBarView(
+                            controller: _tabController,
                             children: _playlists.isEmpty
                                 ? [
                                     _TunerTab(
@@ -541,6 +650,7 @@ class _GuideScreenState extends State<GuideScreen> {
                                               children: [
                                                 if (hasFavorites) _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
                                                 _buildChannelRow('All Channels', _channels),
+                                                ..._buildGroupedChannelRows(_channels, fallbackGroupName: 'Other Channels'),
                                                 const SizedBox(height: 40),
                                               ],
                                             ),
@@ -548,7 +658,7 @@ class _GuideScreenState extends State<GuideScreen> {
                                               crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
                                                 if (hasFavorites) _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
-                                                _buildEpgGrid('Live TV Guide', _channels, availableHeight: guideViewportHeight),
+                                                _buildEpgGrid('Live TV Guide', _channels, availableHeight: guideViewportHeight, fallbackGroupName: 'Other Channels'),
                                               ],
                                             ),
                                           ],
@@ -570,7 +680,9 @@ class _GuideScreenState extends State<GuideScreen> {
                                               children: [
                                                 if (tunerChannels.any((c) => c.isFavorite))
                                                   _buildChannelRow('Favorites', tunerChannels.where((c) => c.isFavorite).toList()),
-                                                if (tunerChannels.isNotEmpty) _buildChannelRow(p.name, tunerChannels),
+                                                if (tunerChannels.isNotEmpty) 
+                                                  _buildChannelRow('All ${p.name} Channels', tunerChannels),
+                                                ..._buildGroupedChannelRows(tunerChannels, fallbackGroupName: 'Other ${p.name} Channels'),
                                                 const SizedBox(height: 40),
                                               ],
                                             ),
@@ -580,7 +692,7 @@ class _GuideScreenState extends State<GuideScreen> {
                                                 if (tunerChannels.any((c) => c.isFavorite))
                                                   _buildChannelRow('Favorites', tunerChannels.where((c) => c.isFavorite).toList()),
                                                 if (tunerChannels.isNotEmpty)
-                                                  _buildEpgGrid('${p.name} Guide', tunerChannels, availableHeight: guideViewportHeight),
+                                                  _buildEpgGrid('${p.name} Guide', tunerChannels, availableHeight: guideViewportHeight, fallbackGroupName: 'Other ${p.name} Channels'),
                                               ],
                                             ),
                                           ],
@@ -658,7 +770,6 @@ class _GuideScreenState extends State<GuideScreen> {
           ),
         ],
       ),
-      ),
     );
   }
 }
@@ -671,6 +782,9 @@ class _StickyEpgGrid extends StatefulWidget {
   final void Function(Channel, {EPGProgram? program}) onFocus;
   final ValueChanged<Channel> onOpenChannel;
   final ValueChanged<EPGProgram> onRecordProgram;
+  final List<String> categories;
+  final String selectedCategory;
+  final ValueChanged<String?> onCategoryChanged;
 
   const _StickyEpgGrid({
     required this.title,
@@ -680,7 +794,12 @@ class _StickyEpgGrid extends StatefulWidget {
     required this.onFocus,
     required this.onOpenChannel,
     required this.onRecordProgram,
+    this.categories = const [],
+    this.selectedCategory = 'All Channels',
+    this.onCategoryChanged = _defaultCategoryChanged,
   });
+
+  static void _defaultCategoryChanged(String? _) {}
 
   @override
   State<_StickyEpgGrid> createState() => _StickyEpgGridState();
@@ -792,6 +911,42 @@ class _StickyEpgGridState extends State<_StickyEpgGrid> {
     return segments;
   }
 
+  Widget _buildCategoryChip(String category) {
+    final isSelected = widget.selectedCategory == category;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: () => widget.onCategoryChanged(category),
+          borderRadius: BorderRadius.circular(20),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: isSelected ? Colors.white : Colors.white.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: isSelected ? Colors.white : Colors.transparent,
+                width: 1,
+              ),
+            ),
+            child: Center(
+              child: Text(
+                category,
+                style: TextStyle(
+                  color: isSelected ? Colors.black : Colors.white70,
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                  fontSize: 14,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (widget.gridChannels.isEmpty) {
@@ -826,6 +981,19 @@ class _StickyEpgGridState extends State<_StickyEpgGrid> {
             ),
           ),
         ),
+        if (widget.categories.isNotEmpty)
+          Container(
+            height: 40,
+            margin: const EdgeInsets.only(bottom: 12),
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              children: [
+                _buildCategoryChip('All Channels'),
+                ...widget.categories.map((c) => _buildCategoryChip(c)),
+              ],
+            ),
+          ),
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

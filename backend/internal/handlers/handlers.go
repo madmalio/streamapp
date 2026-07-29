@@ -430,19 +430,19 @@ func GetChannels(w http.ResponseWriter, r *http.Request) {
 	groupID := r.URL.Query().Get("groupId")
 	search := r.URL.Query().Get("search")
 
-	query := "SELECT id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden FROM channels WHERE 1=1"
+	query := "SELECT c.id, c.playlist_id, cg.name, c.name, c.stream_url, c.logo_url, c.channel_number, c.guide_number, c.is_hidden FROM channels c LEFT JOIN channel_groups cg ON c.group_id = cg.id WHERE 1=1"
 	args := []interface{}{}
 
 	if playlistID != "" {
-		query += " AND playlist_id = ?"
+		query += " AND c.playlist_id = ?"
 		args = append(args, playlistID)
 	}
 	if groupID != "" {
-		query += " AND group_id = ?"
+		query += " AND c.group_id = ?"
 		args = append(args, groupID)
 	}
 	if search != "" {
-		query += " AND name LIKE ?"
+		query += " AND c.name LIKE ?"
 		args = append(args, "%"+search+"%")
 	}
 
