@@ -154,7 +154,7 @@ class ApiService {
         throw Exception('Failed to get raw stream url');
       }
     } else {
-      final session = await startHlsStream(rawUrl, bitrate: bitrate, engine: engine);
+      final session = await startHlsStream(rawUrl, bitrate: bitrate);
       return session.url;
     }
   }
@@ -165,15 +165,13 @@ class ApiService {
     bool fast = false,
     bool prewarm = false,
     bool transmux = false,
-    String? engine,
   }) async {
     final fastParam = fast ? '&fast=1' : '';
     final prewarmParam = prewarm ? '&prewarm=1' : '';
     final transmuxParam = transmux ? '&transmux=1' : '';
-    final engineParam = engine != null && engine.isNotEmpty ? '&engine=${Uri.encodeComponent(engine)}' : '';
     final response = await http.get(
       Uri.parse(
-        '$baseUrl/streams/start?url=${Uri.encodeComponent(rawUrl)}&bitrate=${Uri.encodeComponent(bitrate)}$fastParam$prewarmParam$transmuxParam$engineParam',
+        '$baseUrl/streams/start?url=${Uri.encodeComponent(rawUrl)}&bitrate=${Uri.encodeComponent(bitrate)}$fastParam$prewarmParam$transmuxParam',
       ),
     ).timeout(const Duration(seconds: 35));
 
@@ -210,10 +208,10 @@ class ApiService {
 
 
 
-  Future<HlsStreamSession?> prewarmHlsStream(String rawUrl, {String? bitrate, String? engine}) async {
+  Future<HlsStreamSession?> prewarmHlsStream(String rawUrl, {String? bitrate}) async {
     try {
       final targetBitrate = bitrate ?? await getRecommendedBitrate(forceRefresh: false, fallbackOnUnknown: true);
-      return await startHlsStream(rawUrl, bitrate: targetBitrate, fast: true, prewarm: true, engine: engine);
+      return await startHlsStream(rawUrl, bitrate: targetBitrate, fast: true, prewarm: true);
     } catch (_) {
       // Best-effort prewarm: do not surface failures to UI.
       return null;

@@ -17,7 +17,8 @@ class PlayerScreen extends StatefulWidget {
   final Channel initialChannel;
   final String initialStreamUrl;
   final List<Channel> channels;
-  final Map<String, ChannelEPG> epgData;
+  final Map<String, ChannelEPG>? epgData;
+  final Channel? initialPreviousChannel;
 
   const PlayerScreen({
     super.key,
@@ -25,6 +26,7 @@ class PlayerScreen extends StatefulWidget {
     required this.initialStreamUrl,
     this.channels = const [],
     this.epgData = const {},
+    this.initialPreviousChannel,
   });
 
   @override
@@ -73,7 +75,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   bool _webrtcPlaying = true;
   bool _webrtcFullscreen = false;
   StreamSubscription<double>? _volumeSubscription;
-  String _currentEngine = 'ffmpeg';
   
   bool _controlsVisible = true;
   bool _channelSwitchInProgress = false;
@@ -119,12 +120,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _currentChannel = widget.initialChannel;
+    _previousChannel = widget.initialPreviousChannel;
+    _previousChannelId = widget.initialPreviousChannel?.id;
     _currentStreamUrl = widget.initialStreamUrl;
     _api = context.read<ApiService>();
     _liveEpg = widget.epgData;
 
     final settings = context.read<AppSettings>();
-    _currentEngine = settings.streamingEngine;
     _initAndBootstrap();
     _fetchCurrentProgram();
     _epgTimer = Timer.periodic(const Duration(minutes: 1), (_) => _fetchCurrentProgram());
@@ -759,7 +761,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           bitrate: 'Original',
           fast: preferFastSwitch,
           transmux: true,
-          engine: _currentEngine,
         );
       } else {
         try {
@@ -767,7 +768,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
             _currentChannel.streamUrl,
             bitrate: targetBitrate,
             fast: preferFastSwitch,
-            engine: _currentEngine,
           );
         } catch (_) {
           // If the first attempt failed, the tuner might be stuck. Nuke everything and retry.
@@ -777,7 +777,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
             _currentChannel.streamUrl,
             bitrate: targetBitrate,
             fast: false,
-            engine: _currentEngine,
           );
         }
       }
@@ -877,22 +876,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       await _webrtcRenderer!.dispose();
       _webrtcRenderer = null;
     }
-  }
-
-  Future<void> _toggleEngine() async {
-    final newEngine = _currentEngine == 'ffmpeg' ? 'gstreamer' : 'ffmpeg';
-    setState(() => _currentEngine = newEngine);
-
-    if (_currentBitrate == 'Original' && _currentStreamUrl.contains('.m3u8')) {
-      return;
-    }
-
-    await _changeQuality(
-      _currentBitrate,
-      fallbackOnUnknownAuto: true,
-      refreshAutoRecommendation: false,
-      preferFastSwitch: true,
-    );
   }
 
   Future<void> _onQualitySelected(String bitrate) async {

@@ -3,8 +3,8 @@
 ## Current Architecture (Hybrid HLS)
 - The user is building `streamapp`, a Flutter TV app (`tv_app`) and a Go backend (`backend`) for HDHomeRun live TV.
 - We successfully refactored the streaming engine to a **Hybrid Architecture** leveraging MediaMTX to achieve zero-buffering / zero-disk-I/O:
-  - **Go Backend:** Responsible for translating API calls from Flutter, managing the FFmpeg/GStreamer lifecycles, and instantly killing transcoding processes to instantly free tuners.
-  - **FFmpeg/GStreamer:** Now pushes the stream *directly* into MediaMTX via RTSP (FFmpeg) or SRT (GStreamer) instead of writing `.ts` chunks to SSD.
+  - **Go Backend:** Responsible for translating API calls from Flutter, managing the FFmpeg lifecycles, and instantly killing transcoding processes to instantly free tuners.
+  - **FFmpeg:** Now pushes the stream *directly* into MediaMTX via RTSP instead of writing `.ts` chunks to SSD.
   - **MediaMTX:** Demuxes the RTSP/SRT streams and hosts the LL-HLS segments in RAM (`http://<ip>:8888/hls_<id>/index.m3u8`).
 - **MediaMTX Config**: The user's `mediamtx.yml` is heavily customized using regex paths. To allow the Go backend to publish streams, an `all_others:` catch-all path was added to `mediamtx.yml`.
 
@@ -49,14 +49,11 @@
   - Removed custom on-screen "Re-syncing stream..." badge per user request; native media_kit spinner is now the only recovery UI.
   - Desktop fullscreen channel menu now opens via modal in fullscreen and keeps side-panel behavior in windowed mode.
   - Channel management screen now separates channels by tuner/source via tabs instead of a single long list.
-  - Added session-only "Last Channel" controls in `player_screen.dart`, but current implementation is still not switching reliably.
 
 ## Current Problem (End of Session)
 - **Status**: Pluto and multiple external providers (including Tubi and Plex) now work through proxy-only external HLS routing with noticeably better quality on many channels.
-- **Known Tradeoffs**: Some provider channels may still be dead/upstream-broken, ad-to-ad Pluto transitions can still trigger recovery in edge cases, and the session-only Last Channel button is still unreliable.
+- **Known Tradeoffs**: Some provider channels may still be dead/upstream-broken, ad-to-ad Pluto transitions can still trigger recovery in edge cases.
 
 ## Next Steps (Recommended)
 1. Run short soak tests across Pluto, Plex, and Tubi (channel changes during ad windows) and track crash count + recovery count.
 2. Keep proxy-only external HLS baseline; if a provider fails, inspect new resolver/proxy logs before changing playback policy.
-3. Fix session-only Last Channel return in `player_screen.dart` so the button reliably toggles to the previous channel.
-4. Continue the user's higher-priority GStreamer practical evaluation while preserving FFmpeg fallback.

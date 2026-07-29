@@ -1546,13 +1546,9 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 		strings.EqualFold(r.URL.Query().Get("prewarm"), "true")
 	transmux := strings.EqualFold(r.URL.Query().Get("transmux"), "1") ||
 		strings.EqualFold(r.URL.Query().Get("transmux"), "true")
-	engine := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("engine")))
-	if engine == "" {
-		engine = "ffmpeg"
-	}
 
-	// Create unique ID based on URL, bitrate, transmux, and engine to prevent collisions
-	hashInput := fmt.Sprintf("%s-%s-%t-%s", streamURL, bitrate, transmux, engine)
+	// Create unique ID based on URL, bitrate, and transmux to prevent collisions
+	hashInput := fmt.Sprintf("%s-%s-%t", streamURL, bitrate, transmux)
 	hash := sha256.Sum256([]byte(hashInput))
 	id := hex.EncodeToString(hash[:])[:16]
 
@@ -1592,13 +1588,6 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	hlsSessions[id] = sess
 	hlsSessionsMu.Unlock()
 
-	playlistPath := filepath.ToSlash(filepath.Join(tempDir, "stream.m3u8"))
-	segmentExt := ".m4s"
-	if transmux || engine == "gstreamer" || fastSwitch {
-		segmentExt = ".ts"
-	}
-	segmentPath := filepath.ToSlash(filepath.Join(tempDir, "segment_%05d"+segmentExt))
-
 	vaapiDevice := os.Getenv("FFMPEG_VAAPI_DEVICE")
 	if vaapiDevice == "" {
 		vaapiDevice = "/dev/dri/renderD128"
@@ -1616,58 +1605,7 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	binaryName := "ffmpeg"
 	var args []string
 
-	if engine == "gstreamer" {
-		binaryName = "gst-launch-1.0"
-		gstTime := "4"
-		gstListSize := "6"
-		gstQueueBuffers := "40"
-		if fastSwitch {
-			gstTime = "1"
-			gstListSize = "4"
-			gstQueueBuffers = "15"
-		}
-
-		// Convert bitrate (e.g. "4M" or "1.5M") to kbps for GStreamer's vaapih264enc (e.g. "4000" or "1500")
-		gstBitrate := "4500" // Default fallback
-		trimmedBitrate := strings.TrimSpace(strings.ToUpper(bitrate))
-		if strings.HasSuffix(trimmedBitrate, "M") {
-			numStr := strings.TrimSuffix(trimmedBitrate, "M")
-			if val, err := strconv.ParseFloat(numStr, 64); err == nil {
-				gstBitrate = strconv.Itoa(int(val * 1000))
-			}
-		} else if strings.HasSuffix(trimmedBitrate, "K") {
-			numStr := strings.TrimSuffix(trimmedBitrate, "K")
-			if val, err := strconv.ParseFloat(numStr, 64); err == nil {
-				gstBitrate = strconv.Itoa(int(val))
-			}
-		} else if val, err := strconv.Atoi(trimmedBitrate); err == nil && val > 0 {
-			if val < 10000 {
-				gstBitrate = strconv.Itoa(val)
-			} else {
-				gstBitrate = strconv.Itoa(val / 1000)
-			}
-		}
-
-		// Use SRT to push to MediaMTX
-		// Highly optimized low-latency GStreamer pipeline
-		defaultGstPipeline := `-e souphttpsrc location={url} is-live=true do-timestamp=true keep-alive=true blocksize=16384 ! decodebin name=dec dec. ! queue max-size-buffers={queue_buffers} max-size-time=0 max-size-bytes=0 ! videoconvert ! video/x-raw,format=NV12 ! vaapih264enc bitrate={bitrate} keyframe-period=30 max-bframes=0 rate-control=vbr quality-level=5 ! h264parse config-interval=-1 ! queue max-size-buffers={queue_buffers} ! mpegtsmux name=mux alignment=7 ! srtclientsink uri="srt://127.0.0.1:8890?streamid=publish:hls_{id}" latency=0 dec. ! queue max-size-buffers={queue_buffers} max-size-time=0 max-size-bytes=0 ! audioconvert ! audioresample ! volume volume=1.8 ! voaacenc bitrate=128000 ! aacparse ! queue max-size-buffers={queue_buffers} ! mux.`
-		pipelineStr := os.Getenv("GSTREAMER_PIPELINE")
-		if pipelineStr == "" {
-			pipelineStr = defaultGstPipeline
-		}
-
-		pipelineStr = strings.ReplaceAll(pipelineStr, "{url}", streamURL)
-		pipelineStr = strings.ReplaceAll(pipelineStr, "{bitrate}", gstBitrate)
-		pipelineStr = strings.ReplaceAll(pipelineStr, "{time}", gstTime)
-		pipelineStr = strings.ReplaceAll(pipelineStr, "{list_size}", gstListSize)
-		pipelineStr = strings.ReplaceAll(pipelineStr, "{queue_buffers}", gstQueueBuffers)
-		pipelineStr = strings.ReplaceAll(pipelineStr, "{segment}", segmentPath)
-		pipelineStr = strings.ReplaceAll(pipelineStr, "{playlist}", playlistPath)
-		pipelineStr = strings.ReplaceAll(pipelineStr, "{id}", id)
-		pipelineStr = strings.ReplaceAll(pipelineStr, "{id}", id)
-
-		args = strings.Fields(pipelineStr)
-	} else if transmux {
+	if transmux {
 		// Transmux mode: copy source codecs into HLS-TS segments (no re-encode).
 		args = []string{
 			"-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -1721,13 +1659,6 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 	cmd := exec.CommandContext(ctx, binaryName, args...)
 	sess.Cmd = cmd
 
-	if engine == "gstreamer" {
-		cmd.Env = os.Environ()
-		if vaapiDevice != "" {
-			cmd.Env = append(cmd.Env, "GST_VAAPI_DRM_DEVICE="+vaapiDevice)
-		}
-	}
-
 	stderr, err := cmd.StderrPipe()
 	if err == nil {
 		go func() {
@@ -1736,9 +1667,6 @@ func StartHLSStream(w http.ResponseWriter, r *http.Request) {
 				n, err := stderr.Read(buf)
 				if n > 0 {
 					tag := "[FFMPEG-HLS]"
-					if engine == "gstreamer" {
-						tag = "[GSTREAMER-HLS]"
-					}
 					fmt.Printf("%s %s", tag, string(buf[:n]))
 				}
 				if err != nil {

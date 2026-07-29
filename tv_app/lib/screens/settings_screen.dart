@@ -23,7 +23,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _m3uNameController;
   bool _isSaving = false;
   bool _isSyncingEpg = false;
-  String _selectedEngine = 'ffmpeg';
   String _selectedQuality = 'Auto';
   List<Playlist> _tuners = [];
   bool _isLoadingTuners = true;
@@ -40,7 +39,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _hdhrController = TextEditingController();
     _m3uController = TextEditingController();
     _m3uNameController = TextEditingController();
-    _selectedEngine = settings.streamingEngine;
     _selectedQuality = settings.defaultQuality;
     _loadTuners();
     _loadEpgSources();
@@ -387,7 +385,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final settings = context.read<AppSettings>();
     await settings.setBaseUrl(input);
     await settings.setEpgUrl(epgInput);
-    await settings.setStreamingEngine(_selectedEngine);
     await settings.setDefaultQuality(_selectedQuality);
     if (!mounted) {
       return;
@@ -749,44 +746,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
-                    'Default Transcoding Engine',
-                    style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1A1A1A),
-                      borderRadius: BorderRadius.circular(4),
-                      border: Border.all(color: Colors.white24),
-                    ),
-                    child: DropdownButtonHideUnderline(
-                      child: DropdownButton<String>(
-                        value: _selectedEngine,
-                        dropdownColor: const Color(0xFF1A1A1A),
-                        style: const TextStyle(color: Colors.white, fontSize: 16),
-                        icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
-                        isExpanded: true,
-                        items: const [
-                          DropdownMenuItem(
-                            value: 'ffmpeg',
-                            child: Text('FFmpeg (Resilient VAAPI)'),
-                          ),
-                          DropdownMenuItem(
-                            value: 'gstreamer',
-                            child: Text('GStreamer (Low Latency)'),
-                          ),
-                        ],
-                        onChanged: (val) {
-                          if (val != null) {
-                            setState(() => _selectedEngine = val);
-                          }
-                        },
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 32),
                   const Text(
                     'Default Playback Quality',
                     style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),

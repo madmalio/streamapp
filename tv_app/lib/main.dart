@@ -18,14 +18,14 @@ Future<void> main() async {
   final prefs = await SharedPreferences.getInstance();
   final initialBaseUrl =
       prefs.getString(AppSettings.apiBaseUrlKey) ?? defaultApiBaseUrl;
-  final initialStreamingEngine =
-      prefs.getString(AppSettings.streamingEngineKey) ?? 'ffmpeg';
   final initialDefaultQuality =
       prefs.getString(AppSettings.defaultQualityKey) ?? 'Auto';
   final initialEpgUrl =
       prefs.getString(AppSettings.epgUrlKey) ?? '';
   final initialLastChannelId =
       prefs.getString(AppSettings.lastChannelIdKey) ?? '';
+  final initialPreviousChannelId =
+      prefs.getString(AppSettings.previousChannelIdKey) ?? '';
 
 
   MediaKit.ensureInitialized();
@@ -33,10 +33,10 @@ Future<void> main() async {
   runApp(
     StreamApp(
       initialBaseUrl: initialBaseUrl,
-      initialStreamingEngine: initialStreamingEngine,
       initialDefaultQuality: initialDefaultQuality,
       initialEpgUrl: initialEpgUrl,
       initialLastChannelId: initialLastChannelId,
+      initialPreviousChannelId: initialPreviousChannelId,
     ),
   );
 }
@@ -45,17 +45,17 @@ class StreamApp extends StatelessWidget {
   const StreamApp({
     super.key,
     required this.initialBaseUrl,
-    required this.initialStreamingEngine,
     required this.initialDefaultQuality,
     required this.initialEpgUrl,
     required this.initialLastChannelId,
+    required this.initialPreviousChannelId,
   });
 
   final String initialBaseUrl;
-  final String initialStreamingEngine;
   final String initialDefaultQuality;
   final String initialEpgUrl;
   final String initialLastChannelId;
+  final String initialPreviousChannelId;
 
   @override
   Widget build(BuildContext context) {
@@ -64,10 +64,10 @@ class StreamApp extends StatelessWidget {
         ChangeNotifierProvider(
           create: (_) => AppSettings(
             initialBaseUrl: initialBaseUrl,
-            initialStreamingEngine: initialStreamingEngine,
             initialDefaultQuality: initialDefaultQuality,
             initialEpgUrl: initialEpgUrl,
             initialLastChannelId: initialLastChannelId,
+            initialPreviousChannelId: initialPreviousChannelId,
           ),
         ),
         ProxyProvider<AppSettings, ApiService>(

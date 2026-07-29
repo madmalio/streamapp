@@ -37,7 +37,7 @@ class _TunerTabState extends State<_TunerTab> with AutomaticKeepAliveClientMixin
 
 class _GuideScreenState extends State<GuideScreen> {
   static const bool _prewarmEnabled = false;
-  static const String _gstTestUrl = 'http://192.168.4.143:8090/stream.m3u8';
+
 
   List<Playlist> _playlists = [];
   List<Channel> _channels = [];
@@ -207,8 +207,13 @@ class _GuideScreenState extends State<GuideScreen> {
     _prewarmTimer?.cancel();
     
     if (!mounted) return;
-    
-    context.read<AppSettings>().setLastChannelId(channel.id);
+    final settings = context.read<AppSettings>();
+    await settings.setLastChannelId(channel.id);
+
+    Channel? previousChannel;
+    if (settings.previousChannelId.isNotEmpty) {
+      previousChannel = _channels.where((c) => c.id == settings.previousChannelId).firstOrNull;
+    }
 
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -217,6 +222,7 @@ class _GuideScreenState extends State<GuideScreen> {
           initialStreamUrl: channel.streamUrl,
           channels: _channels.where((c) => c.playlistId == channel.playlistId).toList(),
           epgData: _epgData,
+          initialPreviousChannel: previousChannel,
         ),
       ),
     ).then((_) {
@@ -226,25 +232,6 @@ class _GuideScreenState extends State<GuideScreen> {
     });
   }
 
-  void _openGstTestStream() {
-    final testChannel = Channel(
-      id: 'gst-test',
-      playlistId: '',
-      groupId: '',
-      name: 'GStreamer Test',
-      streamUrl: _gstTestUrl,
-      logoUrl: '',
-      channelNumber: 0,
-      guideNumber: '',
-      isFavorite: false,
-    );
-
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PlayerScreen(initialChannel: testChannel, initialStreamUrl: _gstTestUrl, channels: _channels),
-      ),
-    );
-  }
 
   Future<void> _openSrtTestStream() async {
     _prewarmTimer?.cancel();
