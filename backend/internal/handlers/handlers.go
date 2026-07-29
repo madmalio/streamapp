@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -730,6 +732,8 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	})
 }
 
+var hlsURIAttrRegex = regexp.MustCompile(`URI="([^"]+)"`)
+
 // getBestHlsVariant fetches an HLS master playlist, parses it, and returns the variant URL with the highest BANDWIDTH.
 func getBestHlsVariant(masterUrl string) string {
 	client := &http.Client{
@@ -844,17 +848,39 @@ func ProxyM3U8(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	contentType := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+	if !isLikelyHLSPlaylist(body, contentType) {
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.WriteHeader(resp.StatusCode)
+		w.Write(body)
+		return
+	}
+
+	baseURL, err := url.Parse(resp.Request.URL.String())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to resolve playlist base URL")
+		return
+	}
+
 	// Parse and clean the playlist
 	lines := strings.Split(string(body), "\n")
 	var cleanedLines []string
 
 	for i := 0; i < len(lines); i++ {
 		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
 
 		// Skip dedicated subtitle variant entries entirely
 		if strings.HasPrefix(line, "#EXT-X-MEDIA:TYPE=SUBTITLES") {
 			continue
 		}
+
+		line = rewritePlaylistURIAttributes(line, baseURL)
 
 		// If it's a stream definition, strip the SUBTITLES="subs" parameter
 		if strings.HasPrefix(line, "#EXT-X-STREAM-INF:") {
@@ -873,15 +899,7 @@ func ProxyM3U8(w http.ResponseWriter, r *http.Request) {
 			if i+1 < len(lines) {
 				nextLine := strings.TrimSpace(lines[i+1])
 				if nextLine != "" && !strings.HasPrefix(nextLine, "#") {
-					if !strings.HasPrefix(nextLine, "http") {
-						base, err := url.Parse(resp.Request.URL.String())
-						if err == nil {
-							ref, err := url.Parse(nextLine)
-							if err == nil {
-								nextLine = base.ResolveReference(ref).String()
-							}
-						}
-					}
+					nextLine = resolvePlaylistURL(baseURL, nextLine)
 					cleanedLines = append(cleanedLines, nextLine)
 					i++ // Skip the next line in the outer loop since we just processed it
 				}
@@ -889,10 +907,12 @@ func ProxyM3U8(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Pass through everything else
-		if line != "" {
-			cleanedLines = append(cleanedLines, line)
+		if !strings.HasPrefix(line, "#") {
+			line = resolvePlaylistURL(baseURL, line)
 		}
+
+		// Pass through everything else
+		cleanedLines = append(cleanedLines, line)
 	}
 
 	if preferBest {
@@ -943,6 +963,55 @@ func ProxyM3U8(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(strings.Join(cleanedLines, "\n") + "\n"))
+}
+
+func rewritePlaylistURIAttributes(line string, baseURL *url.URL) string {
+	if baseURL == nil || !strings.Contains(line, "URI=") {
+		return line
+	}
+
+	return hlsURIAttrRegex.ReplaceAllStringFunc(line, func(match string) string {
+		parts := hlsURIAttrRegex.FindStringSubmatch(match)
+		if len(parts) < 2 {
+			return match
+		}
+		resolved := resolvePlaylistURL(baseURL, parts[1])
+		return fmt.Sprintf("URI=\"%s\"", resolved)
+	})
+}
+
+func resolvePlaylistURL(baseURL *url.URL, value string) string {
+	if baseURL == nil {
+		return value
+	}
+
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return value
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return value
+	}
+
+	if parsed.IsAbs() || strings.HasPrefix(trimmed, "data:") {
+		return trimmed
+	}
+
+	return baseURL.ResolveReference(parsed).String()
+}
+
+func isLikelyHLSPlaylist(body []byte, contentType string) bool {
+	if strings.Contains(contentType, "application/vnd.apple.mpegurl") ||
+		strings.Contains(contentType, "application/x-mpegurl") ||
+		strings.Contains(contentType, "audio/mpegurl") ||
+		strings.Contains(contentType, "application/mpegurl") {
+		return true
+	}
+
+	trimmed := bytes.TrimSpace(body)
+	return bytes.HasPrefix(trimmed, []byte("#EXTM3U"))
 }
 
 func hlsBufsizeFromBitrate(bitrate string) string {

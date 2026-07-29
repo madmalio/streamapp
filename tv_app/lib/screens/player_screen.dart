@@ -74,6 +74,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   String _currentEngine = 'ffmpeg';
   
   bool _controlsVisible = true;
+  bool _channelSwitchInProgress = false;
   Timer? _hideControlsTimer;
   Timer? _plutoMonitorTimer;
   bool _plutoMonitorBusy = false;
@@ -82,13 +83,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   bool _plutoSafeBufferMode = false;
   DateTime? _plutoLastRecoveryAt;
   DateTime? _plutoRecoveryCooldownUntil;
+  DateTime? _plutoRecoverySuppressedUntil;
+  DateTime? _plutoHighQualityEligibleAt;
   DateTime? _plutoRecoveryStartedAt;
   DateTime? _plutoStallSince;
   bool _plutoHardRecoveryTried = false;
+  bool _plutoHighQualityScaleActive = false;
   int _plutoRecoveryCount = 0;
   int _plutoRecoveryTotalMs = 0;
   DateTime? _plutoOpenStartedAt;
   DateTime? _lastSurfAt;
+  DateTime? _lastManualSwitchAt;
   int _playbackGeneration = 0;
   Duration _plutoLastPosition = Duration.zero;
   DateTime? _plutoLastProgressAt;
@@ -179,41 +184,80 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   Future<void> _surfToChannel(Channel nextChannel) async {
-    if (_currentChannel.id == nextChannel.id) return;
+    if (_currentChannel.id == nextChannel.id || _channelSwitchInProgress) return;
+    if (_plutoRecoveryInProgress || _openingInProgress) return;
 
     final now = DateTime.now();
+    if (_lastManualSwitchAt != null &&
+        now.difference(_lastManualSwitchAt!) < const Duration(milliseconds: 1200)) {
+      return;
+    }
+    _lastManualSwitchAt = now;
+
     if (_isPlutoChannel &&
         _lastSurfAt != null &&
         now.difference(_lastSurfAt!) < const Duration(milliseconds: 900)) {
       return;
     }
     _lastSurfAt = now;
-    
-    // Clean up current stream gracefully
-    await player?.stop();
-    if (_activeHlsSessionId != null) {
-      final oldId = _activeHlsSessionId;
-      _activeHlsSessionId = null;
-      _api.stopStream(oldId!);
+    final switchingTouchesPluto = _isPlutoChannel || _isPlutoStreamUrl(nextChannel.streamUrl);
+
+    _channelSwitchInProgress = true;
+    try {
+      // Clean up current stream gracefully
+      try {
+        await player?.stop();
+      } catch (e) {
+        debugPrint('Player stop during surf failed: $e');
+      }
+
+      if (switchingTouchesPluto) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+
+      if (_activeHlsSessionId != null) {
+        final oldId = _activeHlsSessionId;
+        _activeHlsSessionId = null;
+        try {
+          await _api.stopStream(oldId!);
+        } catch (e) {
+          debugPrint('Failed to stop previous HLS session during surf: $e');
+        }
+      }
+
+      try {
+        await _stopWebRTC();
+      } catch (e) {
+        debugPrint('WebRTC stop during surf failed: $e');
+      }
+
+      // Save the surfed channel as the last played channel
+      if (mounted) {
+        context.read<AppSettings>().setLastChannelId(nextChannel.id);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _currentChannel = nextChannel;
+        _currentStreamUrl = nextChannel.streamUrl;
+        _currentProgram = null;
+        _isChangingQuality = false;
+      });
+      _playbackGeneration += 1;
+      _resetPlutoMonitorState();
+      if (switchingTouchesPluto) {
+        _plutoRecoverySuppressedUntil = DateTime.now().add(const Duration(seconds: 6));
+        _plutoHighQualityScaleActive = false;
+        _plutoHighQualityEligibleAt = DateTime.now().add(const Duration(seconds: 10));
+      }
+
+      await _fetchCurrentProgram();
+      await _bootstrapPlayback();
+    } catch (e) {
+      debugPrint('Channel surf failed: $e');
+    } finally {
+      _channelSwitchInProgress = false;
     }
-    await _stopWebRTC();
-
-    // Save the surfed channel as the last played channel
-    if (mounted) {
-      context.read<AppSettings>().setLastChannelId(nextChannel.id);
-    }
-
-    setState(() {
-      _currentChannel = nextChannel;
-      _currentStreamUrl = nextChannel.streamUrl;
-      _currentProgram = null;
-      _isChangingQuality = false;
-    });
-    _playbackGeneration += 1;
-    _resetPlutoMonitorState();
-
-    _fetchCurrentProgram();
-    _bootstrapPlayback();
   }
 
   Future<void> _bootstrapPlayback() async {
@@ -253,7 +297,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       if (!mounted || openGeneration != _playbackGeneration) {
         return;
       }
-    
+
+      if (_isPlutoStreamUrl(playbackUrl)) {
+        _plutoHighQualityScaleActive = false;
+        _plutoHighQualityEligibleAt = DateTime.now().add(const Duration(seconds: 10));
+      }
+     
       final isTranscodedHls = RegExp(r'/hls_[^/]+/index\.m3u8').hasMatch(playbackUrl);
     
       // For transcoded HLS streams, we open them paused so the player caches data ahead
@@ -292,36 +341,94 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         if (!isRecovery) {
           unawaited(
             Future<void>.delayed(const Duration(milliseconds: 350), () async {
-              if (mounted && player != null && player!.platform != null && !player!.state.playing) {
+              if (mounted &&
+                  openGeneration == _playbackGeneration &&
+                  !_channelSwitchInProgress &&
+                  player != null &&
+                  player!.platform != null &&
+                  !player!.state.playing) {
                 try { await player!.play(); } catch (_) {}
               }
             }),
           );
           unawaited(
             Future<void>.delayed(const Duration(milliseconds: 900), () async {
-              if (mounted && player != null && player!.platform != null && !player!.state.playing) {
+              if (mounted &&
+                  openGeneration == _playbackGeneration &&
+                  !_channelSwitchInProgress &&
+                  player != null &&
+                  player!.platform != null &&
+                  !player!.state.playing) {
                 try { await player!.play(); } catch (_) {}
               }
             }),
           );
         }
       }
+    } catch (e) {
+      debugPrint('Open/play failed: $e');
     } finally {
       _openingInProgress = false;
     }
   }
 
   Future<String> _resolvePlaybackUrl(String url) async {
-    final lowerUrl = url.toLowerCase();
-    final isJmp2Pluto = lowerUrl.contains('jmp2.uk/plu-') && lowerUrl.contains('.m3u8');
-    if (!isJmp2Pluto) {
+    final proxyDecision = _proxyDecisionForUrl(url);
+    if (!proxyDecision.shouldProxy) {
+      debugPrint('Direct playback URL: $url (${proxyDecision.reason})');
       return url;
     }
 
     final proxyUrl =
         '${_api.baseUrl}/proxy/m3u8?url=${Uri.encodeComponent(url)}&best=1&t=${DateTime.now().millisecondsSinceEpoch}';
-    debugPrint('Resolved Pluto URL: $proxyUrl');
+    debugPrint('Proxying HLS URL: $url -> $proxyUrl');
     return proxyUrl;
+  }
+
+  _ProxyDecision _proxyDecisionForUrl(String url) {
+    final lower = url.toLowerCase();
+    if (lower.contains('/api/proxy/m3u8')) {
+      return const _ProxyDecision(false, 'already-proxied');
+    }
+    if (RegExp(r'/hls_[^/]+/index\.m3u8').hasMatch(lower)) {
+      return const _ProxyDecision(false, 'internal-hls-session');
+    }
+    if (lower.contains('/streams/hls/')) {
+      return const _ProxyDecision(false, 'internal-stream-hls-path');
+    }
+
+    final uri = Uri.tryParse(url);
+    if (uri == null) {
+      return const _ProxyDecision(false, 'unparseable-url');
+    }
+    if (!(uri.scheme == 'http' || uri.scheme == 'https')) {
+      return const _ProxyDecision(false, 'non-http-url');
+    }
+
+    final host = uri.host.toLowerCase();
+    if (host.isEmpty) {
+      return const _ProxyDecision(false, 'missing-host');
+    }
+
+    final looksLikeHlsByUrl = lower.contains('.m3u8');
+    final isPlexPartsEndpoint =
+        host.contains('plex.tv') &&
+        (lower.contains('/library/parts/') || uri.queryParameters.keys.any((k) => k.toLowerCase().contains('plex')));
+
+    if (!looksLikeHlsByUrl && !isPlexPartsEndpoint) {
+      return const _ProxyDecision(false, 'non-hls-url');
+    }
+
+    if (isPlexPartsEndpoint) {
+      return const _ProxyDecision(true, 'plex-parts-endpoint');
+    }
+
+    return const _ProxyDecision(true, 'proxy-all-hls');
+  }
+
+  bool _isPlutoStreamUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.contains('jmp2.uk/plu-') || lower.contains('pluto.tv');
   }
 
   bool get _isPlutoChannel {
@@ -355,6 +462,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _plutoRecoveryTotalMs = 0;
     _plutoRecoveryInProgress = false;
     _plutoSafeBufferMode = false;
+    _plutoHighQualityScaleActive = false;
+    _plutoHighQualityEligibleAt = null;
     _plutoOpenStartedAt = null;
   }
 
@@ -406,7 +515,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         _plutoLastProgressAt != null &&
         now.difference(_plutoLastProgressAt!) >= const Duration(seconds: 3);
 
+    if (_plutoRecoverySuppressedUntil != null && now.isBefore(_plutoRecoverySuppressedUntil!)) {
+      _plutoStallSince = null;
+      return;
+    }
+
     if ((stalledByBuffering && stalledByNoProgress) && !_plutoRecoveryInProgress) {
+      if (_plutoHighQualityScaleActive) {
+        _plutoHighQualityScaleActive = false;
+      }
       _plutoStallSince ??= now;
       await _recoverPlutoPlayback();
       return;
@@ -426,10 +543,24 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       await _configureNativeLowLatencyProfile();
       debugPrint('Pluto profile: returned to low-latency mode');
     }
+
+    final canEnableHighQualityScale =
+        !_plutoSafeBufferMode &&
+        !_plutoRecoveryInProgress &&
+        _plutoHighQualityScaleActive == false &&
+        _plutoHighQualityEligibleAt != null &&
+        now.isAfter(_plutoHighQualityEligibleAt!) &&
+        !state.buffering &&
+        state.playing;
+    if (canEnableHighQualityScale) {
+      _plutoHighQualityScaleActive = true;
+      await _configureNativeLowLatencyProfile();
+      debugPrint('Pluto profile: enabled hybrid spline36 scaler');
+    }
   }
 
   Future<void> _recoverPlutoPlayback() async {
-    if (_plutoRecoveryInProgress || _openingInProgress || !mounted) return;
+    if (_plutoRecoveryInProgress || _openingInProgress || _channelSwitchInProgress || !mounted) return;
 
     final now = DateTime.now();
     if (_plutoRecoveryCooldownUntil != null && now.isBefore(_plutoRecoveryCooldownUntil!)) {
@@ -510,8 +641,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       await nativePlayer.setProperty('sid', isPlutoLike ? 'no' : 'auto');
       await nativePlayer.setProperty('sub-auto', isPlutoLike ? 'no' : 'fuzzy');
       await nativePlayer.setProperty('hls-bitrate', isPlutoLike ? 'max' : 'no');
-      await nativePlayer.setProperty('scale', 'bilinear');
-      await nativePlayer.setProperty('cscale', 'bilinear');
+      if (isPlutoLike && _plutoHighQualityScaleActive && !_plutoSafeBufferMode) {
+        await nativePlayer.setProperty('scale', 'spline36');
+        await nativePlayer.setProperty('cscale', 'bilinear');
+      } else {
+        await nativePlayer.setProperty('scale', 'bilinear');
+        await nativePlayer.setProperty('cscale', 'bilinear');
+      }
     } catch (e) {
       debugPrint('Player parameters not applied: $e');
     }
@@ -758,6 +894,39 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     );
   }
 
+  Future<void> _openFullscreenChannelsMenu() async {
+    _startHideControlsTimer();
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (context) {
+        return Dialog(
+          alignment: Alignment.centerRight,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+          backgroundColor: Colors.transparent,
+          child: Container(
+            width: 380,
+            constraints: const BoxConstraints(maxHeight: 900),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.85),
+              border: Border.all(color: Colors.white24, width: 1),
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: _buildChannelsMenuContent(
+                onClose: () => Navigator.of(context).pop(),
+                onChannelTap: (channel) {
+                  Navigator.of(context).pop();
+                  _surfToChannel(channel);
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
 
 
   Widget _buildQualityMenu() {
@@ -942,7 +1111,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                 const MaterialDesktopVolumeButton(),
                                 IconButton(
                                   icon: const Icon(Icons.list, color: Colors.white),
-                                  onPressed: () => setState(() => _isMenuOpen = !_isMenuOpen),
+                                  onPressed: _openFullscreenChannelsMenu,
                                   tooltip: 'Channels',
                                 ),
                                 _buildQualityMenu(),
@@ -1087,64 +1256,81 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       ),
       child: Material(
         color: Colors.transparent,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'Channels',
-                  style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.close, color: Colors.white),
-                  onPressed: () => setState(() => _isMenuOpen = false),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: ListView.builder(
-              itemCount: widget.channels.length,
-              itemBuilder: (context, index) {
-                final channel = widget.channels[index];
-                final isSelected = channel.id == _currentChannel.id;
-                
-                final now = DateTime.now();
-                final epg = _liveEpg?[channel.id];
-                final currentProg = epg?.programs.where((p) => p.startTime.isBefore(now) && p.endTime.isAfter(now)).firstOrNull;
-                
-                return ListTile(
-                  leading: channel.logoUrl.isNotEmpty
-                      ? Image.network(
-                          channel.logoUrl, 
-                          width: 40, 
-                          height: 40, 
-                          fit: BoxFit.contain,
-                          errorBuilder: (c, e, s) => const Icon(Icons.tv, color: Colors.white54, size: 40),
-                        )
-                      : const Icon(Icons.tv, color: Colors.white54, size: 40),
-                  title: Text(currentProg?.title ?? channel.name, style: const TextStyle(color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text('CH ${channel.guideNumber}', style: const TextStyle(color: Colors.white54)),
-                  selectedTileColor: Colors.blue.withOpacity(0.3),
-                  focusColor: Colors.white24,
-                  hoverColor: Colors.white12,
-                  autofocus: isSelected,
-                  selected: isSelected,
-                  onTap: () {
-                    setState(() => _isMenuOpen = false);
-                    _surfToChannel(channel);
-                  },
-                );
-              },
-            ),
-            ),
-          ],
+        child: _buildChannelsMenuContent(
+          onClose: () => setState(() => _isMenuOpen = false),
+          onChannelTap: (channel) {
+            setState(() => _isMenuOpen = false);
+            _surfToChannel(channel);
+          },
         ),
       ),
     );
   }
+
+  Widget _buildChannelsMenuContent({
+    required VoidCallback onClose,
+    required ValueChanged<Channel> onChannelTap,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Channels',
+                style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close, color: Colors.white),
+                onPressed: onClose,
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: widget.channels.length,
+            itemBuilder: (context, index) {
+              final channel = widget.channels[index];
+              final isSelected = channel.id == _currentChannel.id;
+
+              final now = DateTime.now();
+              final epg = _liveEpg?[channel.id];
+              final currentProg = epg?.programs.where((p) => p.startTime.isBefore(now) && p.endTime.isAfter(now)).firstOrNull;
+
+              return ListTile(
+                leading: channel.logoUrl.isNotEmpty
+                    ? Image.network(
+                        channel.logoUrl,
+                        width: 40,
+                        height: 40,
+                        fit: BoxFit.contain,
+                        errorBuilder: (c, e, s) => const Icon(Icons.tv, color: Colors.white54, size: 40),
+                      )
+                    : const Icon(Icons.tv, color: Colors.white54, size: 40),
+                title: Text(currentProg?.title ?? channel.name, style: const TextStyle(color: Colors.white), maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text('CH ${channel.guideNumber}', style: const TextStyle(color: Colors.white54)),
+                selectedTileColor: Colors.blue.withOpacity(0.3),
+                focusColor: Colors.white24,
+                hoverColor: Colors.white12,
+                autofocus: isSelected,
+                selected: isSelected,
+                onTap: () => onChannelTap(channel),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ProxyDecision {
+  final bool shouldProxy;
+  final String reason;
+
+  const _ProxyDecision(this.shouldProxy, this.reason);
 }

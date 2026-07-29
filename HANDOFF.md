@@ -35,20 +35,26 @@
     - Strips subtitle track declarations (`#EXT-X-MEDIA:TYPE=SUBTITLES`).
     - Rewrites relative variant URLs to absolute URLs using the final redirected base URL.
     - Supports `best=1` to retain only the highest-bandwidth variant.
-  - Updated Flutter Pluto route in `player_screen.dart` to always resolve Pluto-like URLs through `/api/proxy/m3u8?...&best=1&t=<cache-bust>`.
+    - Rewrites media playlist URIs (`segments`, `#EXT-X-KEY URI=`, `#EXT-X-MAP URI=`) to absolute URLs.
+    - Detects HLS by response content (`Content-Type`, `#EXTM3U`) and safely passes through non-HLS responses.
+  - Updated Flutter resolver in `player_screen.dart` to proxy all external HLS URLs through `/api/proxy/m3u8?...&best=1&t=<cache-bust>`, including Plex `epg.provider.plex.tv/library/parts/...` endpoints that do not end with `.m3u8`.
   - Applied Pluto-specific native player properties:
     - Browser-like headers (`User-Agent`, `Referer`, `Origin`).
     - `hwdec=no` to avoid D3D11VA crashes during ad-driven resolution changes.
     - `sid=no` and `sub-auto=no` to prevent subtitle deadlocks.
     - `hls-bitrate=max` and tuned cache/readahead profile.
+    - Hybrid scaler policy: stable playback window enables `scale=spline36` and `cscale=bilinear`; risky windows fall back to bilinear for stability.
   - Added automatic Pluto stall detection/recovery (buffering + no-progress monitor), cooldowns, and single-flight generation guards to prevent surf/recovery race crashes.
+  - Added manual-switch stabilization (debounce, Pluto settle delay, temporary recovery suppression after channel switch) to reduce ad-transition channel-change crashes.
   - Removed custom on-screen "Re-syncing stream..." badge per user request; native media_kit spinner is now the only recovery UI.
+  - Desktop fullscreen channel menu now opens via modal in fullscreen and keeps side-panel behavior in windowed mode.
+  - Channel management screen now separates channels by tuner/source via tabs instead of a single long list.
 
 ## Current Problem (End of Session)
-- **Status**: Pluto direct playback in-app is now working decently through the proxy + stabilization path.
-- **Known Tradeoffs**: Quality can still appear below VLC in some scenes, occasional behind-live drift can appear, and some ad transitions may still require automatic hard recovery.
+- **Status**: Pluto and multiple external providers (including Tubi and Plex) now work through proxy-only external HLS routing with noticeably better quality on many channels.
+- **Known Tradeoffs**: Some provider channels may still be dead/upstream-broken, and ad-to-ad Pluto transitions can still trigger recovery in edge cases.
 
 ## Next Steps (Recommended)
-1. Run a short Pluto soak test (channel changes + ad breaks) and track freeze count/hour, recovery time, and crash count.
-2. Keep current direct-play baseline; tune only one Pluto variable at a time if needed.
+1. Run short soak tests across Pluto, Plex, and Tubi (channel changes during ad windows) and track crash count + recovery count.
+2. Keep proxy-only external HLS baseline; if a provider fails, inspect new resolver/proxy logs before changing playback policy.
 3. Continue the user's higher-priority GStreamer practical evaluation while preserving FFmpeg fallback.
