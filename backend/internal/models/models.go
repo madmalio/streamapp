@@ -25,17 +25,17 @@ type ChannelGroup struct {
 	Name       string `json:"name"`
 }
 
-// Channel represents an individual streamable channel.
 type Channel struct {
-	ID            string `json:"id"`
-	PlaylistID    string `json:"playlist_id"`
-	GroupID       string `json:"group_id"`
-	Name          string `json:"name"`
-	StreamURL     string `json:"stream_url"`
-	LogoURL       string `json:"logo_url"`
-	ChannelNumber int    `json:"channel_number"`
-	GuideNumber   string `json:"guide_number"`
-	IsHidden      bool   `json:"is_hidden"`
+	ID              string `json:"id"`
+	PlaylistID      string `json:"playlist_id"`
+	GroupID         string `json:"group_id"`
+	Name            string `json:"name"`
+	StreamURL       string `json:"stream_url"`
+	LogoURL         string `json:"logo_url"`
+	ChannelNumber   int    `json:"channel_number"`
+	GuideNumber     string `json:"guide_number"`
+	IsHidden        bool   `json:"is_hidden"`
+	SourceChannelID string `json:"source_channel_id"`
 }
 
 // EPGProgram represents a program guide listing for a channel.

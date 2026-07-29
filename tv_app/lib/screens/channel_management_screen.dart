@@ -109,7 +109,12 @@ class _ChannelManagementScreenState extends State<ChannelManagementScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           IconButton(
-            icon: const Icon(Icons.edit, color: Colors.blueAccent),
+            icon: const Icon(Icons.settings, color: Colors.blueAccent),
+            tooltip: 'Edit Channel Info',
+            onPressed: () => _editMetadata(channel),
+          ),
+          IconButton(
+            icon: const Icon(Icons.image, color: Colors.blueAccent),
             tooltip: 'Edit Logo',
             onPressed: () => _editLogo(channel),
           ),
@@ -179,6 +184,102 @@ class _ChannelManagementScreenState extends State<ChannelManagementScreen> {
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to update visibility: $e')));
+      }
+    }
+  }
+
+  Future<void> _editMetadata(Channel channel) async {
+    final nameController = TextEditingController(text: channel.name);
+    final channelNumController = TextEditingController(text: channel.channelNumber.toString());
+    final guideNumController = TextEditingController(text: channel.guideNumber);
+    final groupController = TextEditingController(text: channel.groupId);
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Edit ${channel.name}'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(labelText: 'Name', border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: channelNumController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'Channel Number (e.g. 1)', border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: guideNumController,
+                decoration: const InputDecoration(labelText: 'Guide Number (e.g. 1.1)', border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: groupController,
+                decoration: const InputDecoration(labelText: 'Category / Group', border: OutlineInputBorder()),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context, {
+                'name': nameController.text.trim(),
+                'channel_number': int.tryParse(channelNumController.text.trim()) ?? 0,
+                'guide_number': guideNumController.text.trim(),
+                'group_id': groupController.text.trim(),
+              });
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && mounted) {
+      final api = context.read<ApiService>();
+
+      // Optimistic update
+      final oldChan = channel;
+      setState(() {
+        final index = _channels.indexWhere((c) => c.id == channel.id);
+        if (index != -1) {
+          _channels[index] = Channel(
+            id: channel.id,
+            playlistId: channel.playlistId,
+            groupId: result['group_id'],
+            name: result['name'],
+            streamUrl: channel.streamUrl,
+            logoUrl: channel.logoUrl,
+            channelNumber: result['channel_number'],
+            guideNumber: result['guide_number'],
+            isHidden: channel.isHidden,
+            sourceChannelId: channel.sourceChannelId,
+            isFavorite: channel.isFavorite,
+          );
+        }
+      });
+
+      try {
+        await api.updateChannelMetadata(channel.id, result['name'], result['channel_number'], result['guide_number'], result['group_id']);
+        // Refresh channels to ensure tabs re-sort properly
+        await _fetchChannels();
+      } catch (e) {
+        setState(() {
+          final index = _channels.indexWhere((c) => c.id == channel.id);
+          if (index != -1) {
+            _channels[index] = oldChan;
+          }
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to update: $e')));
+        }
       }
     }
   }

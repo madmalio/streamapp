@@ -70,11 +70,16 @@ func main() {
 		api.Delete("/playlists/{id}", handlers.DeletePlaylist)
 		api.Post("/playlists/{id}/sync", handlers.SyncPlaylist)
 
+		// Virtual Tuners
+		api.Post("/virtual-tuners/generate", handlers.GenerateVirtualTuner)
+
 		// Channel Groups / Categories
 		api.Get("/groups", handlers.GetGroups)
 
 		// Channels
 		api.Get("/channels", handlers.GetChannels)
+		api.Put("/channels/reorder", handlers.ReorderChannels)
+		api.Put("/channels/{id}/metadata", handlers.UpdateChannelMetadata)
 		api.Put("/channels/{id}/logo", handlers.UpdateChannelLogo)
 		api.Put("/channels/{id}/visibility", handlers.UpdateChannelVisibility)
 

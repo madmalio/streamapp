@@ -48,7 +48,7 @@ func ParseM3U(r io.Reader) ([]models.Channel, error) {
 		if hasExtInf {
 			channel := models.Channel{
 				ID:            uuid.New().String(),
-				GroupID:       currentGroup,
+				GroupID:       SmartCategorize(currentName, currentGroup),
 				Name:          currentName,
 				StreamURL:     line,
 				LogoURL:       currentLogo,

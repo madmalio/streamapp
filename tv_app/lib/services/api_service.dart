@@ -70,6 +70,37 @@ class ApiService {
     }
   }
 
+  Future<void> reorderChannels(List<String> channelIds) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/channels/reorder'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'channel_ids': channelIds,
+      }),
+    ).timeout(const Duration(seconds: 15));
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to reorder channels: ${response.body}');
+    }
+  }
+
+  Future<void> updateChannelMetadata(String channelId, String name, int channelNumber, String guideNumber, String groupId) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/channels/$channelId/metadata'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'name': name,
+        'channel_number': channelNumber,
+        'guide_number': guideNumber,
+        'group_id': groupId,
+      }),
+    ).timeout(const Duration(seconds: 15));
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update metadata: ${response.body}');
+    }
+  }
+
   Future<void> updateChannelLogo(String channelId, String logoUrl) async {
     final response = await http.put(
       Uri.parse('$baseUrl/channels/$channelId/logo'),
@@ -107,6 +138,21 @@ class ApiService {
 
     if (response.statusCode != 201 && response.statusCode != 200) {
       throw Exception('Failed to add playlist: ${response.body}');
+    }
+  }
+
+  Future<void> generateVirtualTuner(String name, List<String> selectedChannels) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/virtual-tuners/generate'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'name': name,
+        'selected_channels': selectedChannels,
+      }),
+    ).timeout(const Duration(seconds: 30));
+
+    if (response.statusCode != 201 && response.statusCode != 200) {
+      throw Exception('Failed to create virtual tuner: ${response.body}');
     }
   }
 

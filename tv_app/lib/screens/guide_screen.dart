@@ -121,7 +121,7 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
         _channels = filteredChannels;
         _epgData = epg;
         _focusedChannel = nextFocusedChannel;
-        _focusedProgram = nextFocusedChannel == null ? null : _epgData[nextFocusedChannel.id.toLowerCase()]?.currentProgram;
+        _focusedProgram = nextFocusedChannel == null ? null : _epgData[(nextFocusedChannel.sourceChannelId != null && nextFocusedChannel.sourceChannelId!.isNotEmpty ? nextFocusedChannel.sourceChannelId! : nextFocusedChannel.id).toLowerCase()]?.currentProgram;
         _isLoading = false;
       });
 
@@ -152,7 +152,7 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
     final tunerChannels = _channels.where((c) => c.playlistId == selectedPlaylist.id).toList();
     
     if (tunerChannels.isNotEmpty) {
-      _onChannelFocus(tunerChannels.first, program: _epgData[tunerChannels.first.id.toLowerCase()]?.currentProgram);
+      _onChannelFocus(tunerChannels.first, program: _epgData[(tunerChannels.first.sourceChannelId != null && tunerChannels.first.sourceChannelId!.isNotEmpty ? tunerChannels.first.sourceChannelId! : tunerChannels.first.id).toLowerCase()]?.currentProgram);
     }
   }
 
@@ -489,7 +489,7 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
                   width: 200, // Compact width to fit many channels on screen
                   child: ChannelCard(
                     channel: chan,
-                    onFocus: (c) => _onChannelFocus(c, program: _epgData[c.id.toLowerCase()]?.currentProgram),
+                    onFocus: (c) => _onChannelFocus(c, program: _epgData[(c.sourceChannelId != null && c.sourceChannelId!.isNotEmpty ? c.sourceChannelId! : c.id).toLowerCase()]?.currentProgram),
                     onPlay: _openChannel,
                   ),
                 ),
@@ -1118,7 +1118,7 @@ class _StickyEpgGridState extends State<_StickyEpgGrid> {
                               separatorBuilder: (_, __) => const SizedBox(height: _rowGap),
                               itemBuilder: (context, index) {
                                 final chan = widget.gridChannels[index];
-                                final epg = widget.epgData[chan.id.toLowerCase()];
+                                final epg = widget.epgData[(chan.sourceChannelId != null && chan.sourceChannelId!.isNotEmpty ? chan.sourceChannelId! : chan.id).toLowerCase()];
                                 final programs = epg?.programs ?? <EPGProgram>[];
                                 final segments = _buildTimelineSegments(
                                   programs: programs,

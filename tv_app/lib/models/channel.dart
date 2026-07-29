@@ -8,6 +8,7 @@ class Channel {
   final int channelNumber;
   final String guideNumber;
   final bool isHidden;
+  final String? sourceChannelId;
   bool isFavorite;
 
   Channel({
@@ -20,6 +21,7 @@ class Channel {
     required this.channelNumber,
     required this.guideNumber,
     this.isHidden = false,
+    this.sourceChannelId,
     this.isFavorite = false,
   });
 
@@ -52,6 +54,7 @@ class Channel {
       channelNumber: json['channel_number'] ?? 0,
       guideNumber: json['guide_number'] ?? '',
       isHidden: json['is_hidden'] ?? false,
+      sourceChannelId: json['source_channel_id'],
     );
   }
 }

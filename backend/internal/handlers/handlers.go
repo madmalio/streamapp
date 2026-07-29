@@ -504,6 +504,93 @@ func GetChannels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, channels)
 }
 
+// ReorderChannels handles bulk updating of channel numbers for a given playlist.
+func ReorderChannels(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ChannelIDs []string `json:"channel_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	tx, err := database.DB.Begin()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to start transaction")
+		return
+	}
+	defer tx.Rollback()
+
+	// Update channel_number sequentially based on the array order (starting at 1)
+	for i, id := range req.ChannelIDs {
+		_, err := tx.Exec("UPDATE channels SET channel_number = ? WHERE id = ?", i+1, id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "Failed to update channel number: "+err.Error())
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		writeError(w, http.StatusInternalServerError, "Failed to commit transaction")
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// UpdateChannelMetadata handles manual overrides of a channel's metadata.
+func UpdateChannelMetadata(w http.ResponseWriter, r *http.Request) {
+	chanID := chi.URLParam(r, "id")
+	if chanID == "" {
+		writeError(w, http.StatusBadRequest, "Missing channel ID")
+		return
+	}
+
+	var req struct {
+		Name          string `json:"name"`
+		ChannelNumber int    `json:"channel_number"`
+		GuideNumber   string `json:"guide_number"`
+		GroupID       string `json:"group_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	// Check if group exists, if not, create it on the fly
+	if req.GroupID != "" {
+		var existingGroupID string
+		err := database.DB.QueryRow("SELECT id FROM channel_groups WHERE id = ?", req.GroupID).Scan(&existingGroupID)
+		if err != nil { // Group ID doesn't exist, meaning the user passed a category name (e.g. "Movies") instead of an ID.
+			// Let's create a custom group for this channel's playlist
+			var pID string
+			database.DB.QueryRow("SELECT playlist_id FROM channels WHERE id = ?", chanID).Scan(&pID)
+			
+			if pID != "" {
+				// See if there's already a group with this NAME in the playlist
+				err = database.DB.QueryRow("SELECT id FROM channel_groups WHERE playlist_id = ? AND name = ?", pID, req.GroupID).Scan(&existingGroupID)
+				if err != nil { // Still doesn't exist, create it
+					newID := uuid.New().String()
+					database.DB.Exec("INSERT INTO channel_groups (id, playlist_id, name) VALUES (?, ?, ?)", newID, pID, req.GroupID)
+					req.GroupID = newID
+				} else {
+					req.GroupID = existingGroupID
+				}
+			}
+		}
+	}
+
+	_, err := database.DB.Exec("UPDATE channels SET name = ?, channel_number = ?, guide_number = ?, group_id = ? WHERE id = ?", 
+		req.Name, req.ChannelNumber, req.GuideNumber, req.GroupID, chanID)
+	
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Database error: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
 // UpdateChannelLogo handles manual overrides of a channel's logo.
 func UpdateChannelLogo(w http.ResponseWriter, r *http.Request) {
 	chanID := chi.URLParam(r, "id")
@@ -1265,10 +1352,20 @@ func syncHDHomeRun(pID, urlPath string) error {
 	_, _ = tx.Exec("DELETE FROM channel_groups WHERE playlist_id = ?", pID)
 	_, _ = tx.Exec("DELETE FROM channels WHERE playlist_id = ?", pID)
 
-	gID := uuid.New().String()
-	_, err = tx.Exec("INSERT INTO channel_groups (id, playlist_id, name) VALUES (?, ?, ?)", gID, pID, "HDHomeRun")
-	if err != nil {
-		return err
+	groupMap := make(map[string]string)
+	for _, ch := range channels {
+		gName := ch.GroupID
+		if gName == "" {
+			gName = "HDHomeRun"
+		}
+		if _, exists := groupMap[gName]; !exists {
+			gID := uuid.New().String()
+			_, err = tx.Exec("INSERT INTO channel_groups (id, playlist_id, name) VALUES (?, ?, ?)", gID, pID, gName)
+			if err != nil {
+				return err
+			}
+			groupMap[gName] = gID
+		}
 	}
 
 	stmt, err := tx.Prepare("INSERT OR REPLACE INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
@@ -1279,6 +1376,12 @@ func syncHDHomeRun(pID, urlPath string) error {
 
 	for _, ch := range channels {
 		applyExistingState(&ch, state)
+		gName := ch.GroupID
+		if gName == "" {
+			gName = "HDHomeRun"
+		}
+		gID := groupMap[gName]
+
 		isHiddenInt := 0
 		if ch.IsHidden {
 			isHiddenInt = 1
@@ -1357,6 +1460,7 @@ func syncEPGSource(xmltvURL string, sourceID string) error {
 	defer stmt.Close()
 
 	logoMap := make(map[string]string)
+	categoryUpdateMap := make(map[string]string)
 
 	callback := func(prog models.EPGProgram, xmlChan *parser.XMLTVChannel) error {
 		epgChanID := strings.ToLower(prog.ChannelID)
@@ -1437,6 +1541,17 @@ func syncEPGSource(xmltvURL string, sourceID string) error {
 				logoMap[matchedChanID] = existingLogo
 			}
 
+			// Try to automatically fix the category using rich EPG display names
+			if xmlChan != nil {
+				for _, dn := range xmlChan.DisplayName {
+					cat := parser.SmartCategorize(dn, "")
+					if cat != "Other" {
+						categoryUpdateMap[matchedChanID] = cat
+						break
+					}
+				}
+			}
+
 			progID := uuid.New().String()
 			_, err = stmt.Exec(progID, sourceID, matchedChanID, prog.Title, prog.Description, prog.StartTime.UTC().Format(time.RFC3339), prog.EndTime.UTC().Format(time.RFC3339), prog.PosterURL)
 			if err != nil {
@@ -1462,6 +1577,20 @@ func syncEPGSource(xmltvURL string, sourceID string) error {
 
 	for chanID, newLogoURL := range logoMap {
 		_, _ = tx.Exec("UPDATE channels SET logo_url = ? WHERE id = ?", newLogoURL, chanID)
+	}
+
+	for chanID, catName := range categoryUpdateMap {
+		var pID string
+		err := tx.QueryRow("SELECT playlist_id FROM channels WHERE id = ?", chanID).Scan(&pID)
+		if err == nil && pID != "" {
+			var gID string
+			err = tx.QueryRow("SELECT id FROM channel_groups WHERE playlist_id = ? AND name = ?", pID, catName).Scan(&gID)
+			if err != nil {
+				gID = uuid.New().String()
+				tx.Exec("INSERT INTO channel_groups (id, playlist_id, name) VALUES (?, ?, ?)", gID, pID, catName)
+			}
+			tx.Exec("UPDATE channels SET group_id = ? WHERE id = ?", gID, chanID)
+		}
 	}
 
 	err = tx.Commit()

@@ -49,11 +49,17 @@
   - Removed custom on-screen "Re-syncing stream..." badge per user request; native media_kit spinner is now the only recovery UI.
   - Desktop fullscreen channel menu now opens via modal in fullscreen and keeps side-panel behavior in windowed mode.
   - Channel management screen now separates channels by tuner/source via tabs instead of a single long list.
+  - **Virtual Tuners & Categorization Engine:**
+    - Revamped Virtual Tuners (Wizard UI) allowing deduplication and category selection.
+    - Added `SmartCategorize` regex engine to identify networks (e.g., NBC, ABC, CBS, MeTV) from channel names.
+    - Implemented EPG-based category overrides: `syncEPGSource` now leverages rich display names from XMLTV to accurately categorize local affiliates that the raw HDHomeRun tuner sync initially marked as 'Other'.
+  - **Volume Slider Reverted**: Explored persistent custom volume slider, but reverted back to default `media_kit_video` hover controls due to player widget tree rebuild conflicts. Will investigate in a future session.
 
 ## Current Problem (End of Session)
-- **Status**: Pluto and multiple external providers (including Tubi and Plex) now work through proxy-only external HLS routing with noticeably better quality on many channels.
-- **Known Tradeoffs**: Some provider channels may still be dead/upstream-broken, ad-to-ad Pluto transitions can still trigger recovery in edge cases.
+- **Status**: Smart categorization of local affiliates is successfully classifying networks. Virtual Tuner wizard is fully functional. Pluto and external providers remain stable via proxy routing.
+- **Pending/Open**: We reverted the custom persistent volume slider in `player_screen.dart` due to state conflicts; this needs a proper structural fix if we decide to remove the hover-only volume control later.
 
 ## Next Steps (Recommended)
 1. Run short soak tests across Pluto, Plex, and Tubi (channel changes during ad windows) and track crash count + recovery count.
-2. Keep proxy-only external HLS baseline; if a provider fails, inspect new resolver/proxy logs before changing playback policy.
+2. Continue testing the Smart Categorization Engine with different HDHomeRun setups to ensure all local network variants (e.g. 'NBC 5') are caught by the regex patterns in `category.go`.
+3. If returning to the volume slider, refactor `PlayerScreen` to prevent total widget tree rebuilds on volume state changes.

@@ -54,6 +54,7 @@ func InitDB(dbPath string) (*sql.DB, error) {
 			channel_number INTEGER DEFAULT 0,
 			guide_number TEXT DEFAULT '',
 			is_hidden BOOLEAN DEFAULT 0,
+			source_channel_id TEXT DEFAULT '',
 			FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
 			FOREIGN KEY (group_id) REFERENCES channel_groups(id) ON DELETE CASCADE
 		);`,
@@ -83,6 +84,7 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	_, _ = db.Exec("ALTER TABLE channels ADD COLUMN is_hidden BOOLEAN DEFAULT 0;")
 	_, _ = db.Exec("ALTER TABLE epg_programs ADD COLUMN source_id TEXT DEFAULT '';")
 	_, _ = db.Exec("ALTER TABLE channels ADD COLUMN guide_number TEXT DEFAULT ''")
+	_, _ = db.Exec("ALTER TABLE channels ADD COLUMN source_channel_id TEXT DEFAULT ''")
 
 	DB = db
 	log.Println("SQLite database initialized successfully at", dbPath)

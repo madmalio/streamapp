@@ -92,6 +92,7 @@ func FetchHDHomeRunChannels(ipOrLineupURL string) ([]models.Channel, error) {
 			Name:          hc.GuideName,
 			StreamURL:     hc.URL,
 			LogoURL:       "", // HDHomeRun line-ups do not specify logo images
+			GroupID:       SmartCategorize(hc.GuideName, ""),
 			ChannelNumber: chno,
 			GuideNumber:   hc.GuideNumber,
 		})
