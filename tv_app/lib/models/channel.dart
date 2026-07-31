@@ -54,6 +54,7 @@ class Channel {
       channelNumber: json['channel_number'] ?? 0,
       guideNumber: json['guide_number'] ?? '',
       isHidden: json['is_hidden'] ?? false,
+      isFavorite: json['is_favorite'] ?? false,
       sourceChannelId: json['source_channel_id'],
     );
   }

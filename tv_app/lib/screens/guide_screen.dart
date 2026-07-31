@@ -274,6 +274,8 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
       // Clean up when returning from the player
       _prewarmToken += 1;
       _activePrewarmSessionId = null;
+      // Refresh channels to get updated favorite status
+      _loadChannels();
     });
   }
 
@@ -511,11 +513,20 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
       groups.putIfAbsent(groupName, () => []).add(c);
     }
 
+    // Add Favorites as a special category if there are any favorites
+    final favoriteChannels = channelsList.where((c) => c.isFavorite).toList();
+    if (favoriteChannels.isNotEmpty) {
+      groups['Favorites'] = favoriteChannels;
+    }
+
     if (groups.length <= 1) {
       return const [];
     }
 
     final sortedKeys = groups.keys.toList()..sort((a, b) {
+      // Favorites always comes first
+      if (a == 'Favorites') return -1;
+      if (b == 'Favorites') return 1;
       if (a == fallbackGroupName || a == 'Other') return 1;
       if (b == fallbackGroupName || b == 'Other') return -1;
       final orderA = _getCategoryOrder(a);
@@ -538,7 +549,16 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
       groups.putIfAbsent(groupName, () => []).add(c);
     }
 
+    // Add Favorites as a special category if there are any favorites
+    final favoriteChannels = gridChannels.where((c) => c.isFavorite).toList();
+    if (favoriteChannels.isNotEmpty) {
+      groups['Favorites'] = favoriteChannels;
+    }
+
     final sortedCategories = groups.keys.toList()..sort((a, b) {
+      // Favorites always comes first
+      if (a == 'Favorites') return -1;
+      if (b == 'Favorites') return 1;
       if (a == fallbackGroupName || a == 'Other') return 1;
       if (b == fallbackGroupName || b == 'Other') return -1;
       final orderA = _getCategoryOrder(a);
@@ -560,7 +580,7 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
       onFocus: _onChannelFocus,
       onOpenChannel: _openChannel,
       onRecordProgram: _showRecordModal,
-      categories: groups.length > 1 ? sortedCategories : [],
+      categories: sortedCategories,
       selectedCategory: _selectedCategory ?? 'All Channels',
       onCategoryChanged: (String? newCategory) {
         setState(() {
@@ -572,7 +592,6 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
 
   @override
   Widget build(BuildContext context) {
-    final hasFavorites = _channels.any((c) => c.isFavorite);
     final tabCount = _playlists.isEmpty ? 1 : _playlists.length;
     final screenHeight = MediaQuery.of(context).size.height;
     final heroHeight = screenHeight >= 1200
@@ -648,7 +667,6 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
                                             Column(
                                               crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
-                                                if (hasFavorites) _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
                                                 _buildChannelRow('All Channels', _channels),
                                                 ..._buildGroupedChannelRows(_channels, fallbackGroupName: 'Other Channels'),
                                                 const SizedBox(height: 40),
@@ -657,7 +675,6 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
                                             Column(
                                               crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
-                                                if (hasFavorites) _buildChannelRow('Favorites', _channels.where((c) => c.isFavorite).toList()),
                                                 _buildEpgGrid('Live TV Guide', _channels, availableHeight: guideViewportHeight, fallbackGroupName: 'Other Channels'),
                                               ],
                                             ),
@@ -678,8 +695,6 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
                                             Column(
                                               crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
-                                                if (tunerChannels.any((c) => c.isFavorite))
-                                                  _buildChannelRow('Favorites', tunerChannels.where((c) => c.isFavorite).toList()),
                                                 if (tunerChannels.isNotEmpty) 
                                                   _buildChannelRow('All ${p.name} Channels', tunerChannels),
                                                 ..._buildGroupedChannelRows(tunerChannels, fallbackGroupName: 'Other ${p.name} Channels'),
@@ -689,8 +704,6 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
                                             Column(
                                               crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
-                                                if (tunerChannels.any((c) => c.isFavorite))
-                                                  _buildChannelRow('Favorites', tunerChannels.where((c) => c.isFavorite).toList()),
                                                 if (tunerChannels.isNotEmpty)
                                                   _buildEpgGrid('${p.name} Guide', tunerChannels, availableHeight: guideViewportHeight, fallbackGroupName: 'Other ${p.name} Channels'),
                                               ],
@@ -1297,6 +1310,17 @@ class _ChannelCardState extends State<ChannelCard> {
                       ),
                     ),
                   ),
+                  // Favorite indicator
+                  if (widget.channel.isFavorite)
+                    Positioned(
+                      top: 8,
+                      right: 8,
+                      child: Icon(
+                        Icons.favorite,
+                        color: Colors.redAccent,
+                        size: 16,
+                      ),
+                    ),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [

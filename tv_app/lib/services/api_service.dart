@@ -125,6 +125,18 @@ class ApiService {
     }
   }
 
+  Future<void> updateChannelFavorite(String channelId, bool isFavorite) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/channels/$channelId/favorite'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'is_favorite': isFavorite}),
+    ).timeout(const Duration(seconds: 10));
+
+    if (response.statusCode != 200) {
+      throw Exception('Failed to update channel favorite: ${response.body}');
+    }
+  }
+
   Future<void> addPlaylist({required String name, required String urlPath, required String type}) async {
     final response = await http.post(
       Uri.parse('$baseUrl/playlists'),
@@ -154,6 +166,25 @@ class ApiService {
     if (response.statusCode != 201 && response.statusCode != 200) {
       throw Exception('Failed to create virtual tuner: ${response.body}');
     }
+  }
+
+  Future<Map<String, dynamic>> createVirtualTunerFromFavorites({String? name}) async {
+    final body = <String, dynamic>{};
+    if (name != null && name.isNotEmpty) {
+      body['name'] = name;
+    }
+
+    final response = await http.post(
+      Uri.parse('$baseUrl/virtual-tuners/from-favorites'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(body),
+    ).timeout(const Duration(seconds: 30));
+
+    if (response.statusCode != 201 && response.statusCode != 200) {
+      throw Exception('Failed to create virtual tuner from favorites: ${response.body}');
+    }
+
+    return jsonDecode(response.body);
   }
 
   Future<void> syncEpg(String epgUrl) async {

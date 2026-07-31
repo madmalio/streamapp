@@ -104,6 +104,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   DateTime? _plutoLastProgressAt;
   DateTime? _plutoBufferingSince;
 
+  Timer? _sleepTimer;
+  int _sleepMinutesRemaining = 0;
+  bool _isFavorite = false;
+
   final List<String> _qualityOptions = [
     'Auto',
     'Original',
@@ -122,6 +126,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _currentChannel = widget.initialChannel;
+    _isFavorite = widget.initialChannel.isFavorite;
     _previousChannel = widget.initialPreviousChannel;
     _previousChannelId = widget.initialPreviousChannel?.id;
     _currentStreamUrl = widget.initialStreamUrl;
@@ -152,6 +157,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _plutoMonitorTimer?.cancel();
     _heartbeatTimer?.cancel();
     _volumeSubscription?.cancel();
+    _sleepTimer?.cancel();
     
     if (_activeHlsSessionId != null) {
       _api.stopStream(_activeHlsSessionId!);
@@ -259,6 +265,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         _currentStreamUrl = nextChannel.streamUrl;
         _currentProgram = null;
         _isChangingQuality = false;
+        _isFavorite = nextChannel.isFavorite;
       });
       _playbackGeneration += 1;
       _resetPlutoMonitorState();
@@ -928,6 +935,144 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     );
   }
 
+  Widget _buildFavoriteButton() {
+    return IconButton(
+      key: ValueKey('favorite_${_currentChannel.id}_$_isFavorite'),
+      icon: Icon(
+        _isFavorite ? Icons.favorite : Icons.favorite_border,
+        color: _isFavorite ? Colors.redAccent : Colors.white,
+      ),
+      tooltip: _isFavorite ? 'Remove from Favorites' : 'Add to Favorites',
+      onPressed: () async {
+        final newFavorite = !_isFavorite;
+        try {
+          await _api.updateChannelFavorite(_currentChannel.id, newFavorite);
+          setState(() {
+            _isFavorite = newFavorite;
+            _currentChannel.isFavorite = newFavorite;
+          });
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Failed to update favorite: $e'), backgroundColor: Colors.red),
+            );
+          }
+        }
+      },
+    );
+  }
+
+  Widget _buildSleepTimerButton() {
+    return IconButton(
+      icon: Stack(
+        children: [
+          Icon(Icons.bedtime, color: _sleepTimer != null ? Colors.orange : Colors.white),
+          if (_sleepTimer != null)
+            Positioned(
+              right: 0,
+              top: 0,
+              child: Container(
+                padding: const EdgeInsets.all(2),
+                decoration: const BoxDecoration(
+                  color: Colors.orange,
+                  shape: BoxShape.circle,
+                ),
+                child: Text(
+                  '${_sleepMinutesRemaining}',
+                  style: const TextStyle(fontSize: 8, color: Colors.white, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+        ],
+      ),
+      tooltip: _sleepTimer != null ? 'Sleep Timer (${_sleepMinutesRemaining}m)' : 'Sleep Timer',
+      onPressed: () => _showSleepTimerDialog(),
+    );
+  }
+
+  void _showSleepTimerDialog() {
+    showDialog<int>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('Sleep Timer', style: TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_sleepTimer != null)
+              ListTile(
+                leading: const Icon(Icons.cancel, color: Colors.red),
+                title: const Text('Cancel Timer', style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  _cancelSleepTimer();
+                  Navigator.pop(context);
+                },
+              ),
+            ListTile(
+              leading: const Icon(Icons.bedtime, color: Colors.white70),
+              title: const Text('15 minutes', style: TextStyle(color: Colors.white)),
+              onTap: () => Navigator.pop(context, 15),
+            ),
+            ListTile(
+              leading: const Icon(Icons.bedtime, color: Colors.white70),
+              title: const Text('30 minutes', style: TextStyle(color: Colors.white)),
+              onTap: () => Navigator.pop(context, 30),
+            ),
+            ListTile(
+              leading: const Icon(Icons.bedtime, color: Colors.white70),
+              title: const Text('45 minutes', style: TextStyle(color: Colors.white)),
+              onTap: () => Navigator.pop(context, 45),
+            ),
+            ListTile(
+              leading: const Icon(Icons.bedtime, color: Colors.white70),
+              title: const Text('60 minutes', style: TextStyle(color: Colors.white)),
+              onTap: () => Navigator.pop(context, 60),
+            ),
+            ListTile(
+              leading: const Icon(Icons.bedtime, color: Colors.white70),
+              title: const Text('90 minutes', style: TextStyle(color: Colors.white)),
+              onTap: () => Navigator.pop(context, 90),
+            ),
+          ],
+        ),
+      ),
+    ).then((minutes) {
+      if (minutes != null) {
+        _startSleepTimer(minutes);
+      }
+    });
+  }
+
+  void _startSleepTimer(int minutes) {
+    _cancelSleepTimer();
+    _sleepMinutesRemaining = minutes;
+    _sleepTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
+      _sleepMinutesRemaining--;
+      if (_sleepMinutesRemaining <= 0) {
+        _cancelSleepTimer();
+        _stopPlayback();
+      }
+      if (mounted) setState(() {});
+    });
+    if (mounted) setState(() {});
+  }
+
+  void _cancelSleepTimer() {
+    _sleepTimer?.cancel();
+    _sleepTimer = null;
+    _sleepMinutesRemaining = 0;
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _stopPlayback() async {
+    try {
+      await player?.stop();
+    } catch (_) {}
+    if (_activeHlsSessionId != null) {
+      await _api.stopStream(_activeHlsSessionId!);
+    }
+  }
+
   Future<void> _openFullscreenChannelsMenu() async {
     _startHideControlsTimer();
     await showDialog<void>(
@@ -1120,13 +1265,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                 ? RTCVideoViewObjectFit.RTCVideoViewObjectFitCover
                                 : RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
                           )
-                        : MaterialDesktopVideoControlsTheme(
+                        : KeyedSubtree(
+                            key: ValueKey('controls_${_currentChannel.id}_$_isFavorite'),
+                            child: MaterialDesktopVideoControlsTheme(
                             normal: MaterialDesktopVideoControlsThemeData(
                               bottomButtonBar: [
                                 const MaterialPlayOrPauseButton(),
                                 const MaterialPositionIndicator(),
                                 const Spacer(),
                                 const MaterialDesktopVolumeButton(),
+                                _buildFavoriteButton(),
+                                _buildSleepTimerButton(),
                                 IconButton(
                                   icon: const Icon(Icons.list, color: Colors.white),
                                   onPressed: () => setState(() => _isMenuOpen = !_isMenuOpen),
@@ -1144,6 +1293,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                 const MaterialPositionIndicator(),
                                 const Spacer(),
                                 const MaterialDesktopVolumeButton(),
+                                _buildFavoriteButton(),
+                                _buildSleepTimerButton(),
                                 IconButton(
                                   icon: const Icon(Icons.list, color: Colors.white),
                                   onPressed: _openFullscreenChannelsMenu,
@@ -1164,6 +1315,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                   )
                                 : const SizedBox.expand(),
                           ),
+                          )
                   ),
 
 

@@ -4,11 +4,12 @@ import "time"
 
 // Playlist represents an IPTV playlist source (M3U or Xtream API connection).
 type Playlist struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	URLPath   string    `json:"url_path"`
-	Type      string    `json:"type"` // "M3U" or "Xtream"
-	CreatedAt time.Time `json:"created_at"`
+	ID                   string    `json:"id"`
+	Name                 string    `json:"name"`
+	URLPath              string    `json:"url_path"`
+	Type                 string    `json:"type"` // "M3U" or "Xtream"
+	CreatedAt            time.Time `json:"created_at"`
+	CreatedFromFavorites bool      `json:"created_from_favorites"`
 }
 
 type EpgSource struct {
@@ -35,6 +36,7 @@ type Channel struct {
 	ChannelNumber   int    `json:"channel_number"`
 	GuideNumber     string `json:"guide_number"`
 	IsHidden        bool   `json:"is_hidden"`
+	IsFavorite      bool   `json:"is_favorite"`
 	SourceChannelID string `json:"source_channel_id"`
 }
 

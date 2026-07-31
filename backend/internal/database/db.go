@@ -85,6 +85,8 @@ func InitDB(dbPath string) (*sql.DB, error) {
 	_, _ = db.Exec("ALTER TABLE epg_programs ADD COLUMN source_id TEXT DEFAULT '';")
 	_, _ = db.Exec("ALTER TABLE channels ADD COLUMN guide_number TEXT DEFAULT ''")
 	_, _ = db.Exec("ALTER TABLE channels ADD COLUMN source_channel_id TEXT DEFAULT ''")
+	_, _ = db.Exec("ALTER TABLE channels ADD COLUMN is_favorite BOOLEAN DEFAULT 0")
+	_, _ = db.Exec("ALTER TABLE playlists ADD COLUMN created_from_favorites BOOLEAN DEFAULT 0")
 
 	DB = db
 	log.Println("SQLite database initialized successfully at", dbPath)

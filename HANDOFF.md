@@ -54,9 +54,17 @@
     - Added `SmartCategorize` regex engine to identify networks (e.g., NBC, ABC, CBS, MeTV) from channel names.
     - Implemented EPG-based category overrides: `syncEPGSource` now leverages rich display names from XMLTV to accurately categorize local affiliates that the raw HDHomeRun tuner sync initially marked as 'Other'.
   - **Volume Slider Reverted**: Explored persistent custom volume slider, but reverted back to default `media_kit_video` hover controls due to player widget tree rebuild conflicts. Will investigate in a future session.
+  - **Tuner Editor Consolidation**: Merged channel management into a unified `tuner_editor.dart` accessible from the pencil icon on each tuner in Settings Tab 1. This editor handles:
+    - Tuner-level settings (name + URL editing; URL read-only for virtual tuners)
+    - Channel metadata editing (name, guide number, category)
+    - Logo URL editing
+    - Visibility toggle (green/red switch instead of confusing "delete")
+    - Drag-to-reorder (virtual tuners only)
+  - Removed redundant "Manage Channels & Logos" button from Tab 2 (Guide & Channels), making Tab 2 EPG-focused only.
+  - Deleted obsolete files: `virtual_tuner_editor.dart` and `channel_management_screen.dart`.
 
 ## Current Problem (End of Session)
-- **Status**: Smart categorization of local affiliates is successfully classifying networks. Virtual Tuner wizard is fully functional. Pluto and external providers remain stable via proxy routing.
+- **Status**: Tuner management is now consolidated into a single unified editor. Virtual tuners support drag-to-reorder; all tuners support channel metadata/logo/visibility editing. Pluto and external providers remain stable via proxy routing.
 - **Pending/Open**: We reverted the custom persistent volume slider in `player_screen.dart` due to state conflicts; this needs a proper structural fix if we decide to remove the hover-only volume control later.
 
 ## Next Steps (Recommended)

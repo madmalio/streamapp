@@ -114,7 +114,7 @@ type PlaylistRequest struct {
 
 // GetPlaylists lists all configured playlists.
 func GetPlaylists(w http.ResponseWriter, r *http.Request) {
-	rows, err := database.DB.Query("SELECT id, name, url_path, type, created_at FROM playlists ORDER BY created_at DESC")
+	rows, err := database.DB.Query("SELECT id, name, url_path, type, created_at, created_from_favorites FROM playlists ORDER BY created_at DESC")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -124,10 +124,12 @@ func GetPlaylists(w http.ResponseWriter, r *http.Request) {
 	playlists := []models.Playlist{}
 	for rows.Next() {
 		var p models.Playlist
-		if err := rows.Scan(&p.ID, &p.Name, &p.URLPath, &p.Type, &p.CreatedAt); err != nil {
+		var createdFromFavoritesRaw interface{}
+		if err := rows.Scan(&p.ID, &p.Name, &p.URLPath, &p.Type, &p.CreatedAt, &createdFromFavoritesRaw); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		p.CreatedFromFavorites = parseSQLiteBool(createdFromFavoritesRaw)
 		playlists = append(playlists, p)
 	}
 
@@ -430,7 +432,7 @@ func GetChannels(w http.ResponseWriter, r *http.Request) {
 	groupID := r.URL.Query().Get("groupId")
 	search := r.URL.Query().Get("search")
 
-	query := "SELECT c.id, c.playlist_id, cg.name, c.name, c.stream_url, c.logo_url, c.channel_number, c.guide_number, c.is_hidden FROM channels c LEFT JOIN channel_groups cg ON c.group_id = cg.id WHERE 1=1"
+	query := "SELECT c.id, c.playlist_id, cg.name, c.name, c.stream_url, c.logo_url, c.channel_number, c.guide_number, c.is_hidden, c.is_favorite FROM channels c LEFT JOIN channel_groups cg ON c.group_id = cg.id WHERE 1=1"
 	args := []interface{}{}
 
 	if playlistID != "" {
@@ -460,7 +462,8 @@ func GetChannels(w http.ResponseWriter, r *http.Request) {
 		var logoURLOpt sql.NullString
 		var guideNumOpt sql.NullString
 		var isHiddenRaw interface{}
-		if err := rows.Scan(&c.ID, &c.PlaylistID, &groupIDOpt, &c.Name, &c.StreamURL, &logoURLOpt, &c.ChannelNumber, &guideNumOpt, &isHiddenRaw); err != nil {
+		var isFavoriteRaw interface{}
+		if err := rows.Scan(&c.ID, &c.PlaylistID, &groupIDOpt, &c.Name, &c.StreamURL, &logoURLOpt, &c.ChannelNumber, &guideNumOpt, &isHiddenRaw, &isFavoriteRaw); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -468,6 +471,7 @@ func GetChannels(w http.ResponseWriter, r *http.Request) {
 		c.LogoURL = logoURLOpt.String
 		c.GuideNumber = guideNumOpt.String
 		c.IsHidden = parseSQLiteBool(isHiddenRaw)
+		c.IsFavorite = parseSQLiteBool(isFavoriteRaw)
 		channels = append(channels, c)
 	}
 
@@ -638,6 +642,42 @@ func UpdateChannelVisibility(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := database.DB.Exec("UPDATE channels SET is_hidden = ? WHERE id = ?", isHiddenInt, chanID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Database error: "+err.Error())
+		return
+	}
+
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		writeError(w, http.StatusNotFound, "Channel not found or stale ID")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
+}
+
+// UpdateChannelFavorite handles toggling a channel's favorite status.
+func UpdateChannelFavorite(w http.ResponseWriter, r *http.Request) {
+	chanID := chi.URLParam(r, "id")
+	if chanID == "" {
+		writeError(w, http.StatusBadRequest, "Missing channel ID")
+		return
+	}
+
+	var req struct {
+		IsFavorite bool `json:"is_favorite"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	isFavoriteInt := 0
+	if req.IsFavorite {
+		isFavoriteInt = 1
+	}
+
+	res, err := database.DB.Exec("UPDATE channels SET is_favorite = ? WHERE id = ?", isFavoriteInt, chanID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Database error: "+err.Error())
 		return
@@ -1205,6 +1245,8 @@ func syncPlaylistSource(pID, urlPath, pType, username, password string) error {
 		return syncXtream(pID, urlPath, username, password)
 	case "HDHOMERUN":
 		return syncHDHomeRun(pID, urlPath)
+	case "VIRTUAL":
+		return nil // Virtual tuners don't sync from external sources
 	default:
 		return fmt.Errorf("unsupported playlist type: %s", pType)
 	}

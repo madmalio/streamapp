@@ -72,6 +72,7 @@ func main() {
 
 		// Virtual Tuners
 		api.Post("/virtual-tuners/generate", handlers.GenerateVirtualTuner)
+		api.Post("/virtual-tuners/from-favorites", handlers.CreateFromFavorites)
 
 		// Channel Groups / Categories
 		api.Get("/groups", handlers.GetGroups)
@@ -82,6 +83,7 @@ func main() {
 		api.Put("/channels/{id}/metadata", handlers.UpdateChannelMetadata)
 		api.Put("/channels/{id}/logo", handlers.UpdateChannelLogo)
 		api.Put("/channels/{id}/visibility", handlers.UpdateChannelVisibility)
+		api.Put("/channels/{id}/favorite", handlers.UpdateChannelFavorite)
 
 		// EPG
 		api.Get("/epg/live", handlers.GetLiveEPG)

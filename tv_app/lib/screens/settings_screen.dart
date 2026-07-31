@@ -5,9 +5,8 @@ import '../services/app_settings.dart';
 import '../services/api_service.dart';
 import '../models/playlist.dart';
 import '../models/epg_source.dart';
-import 'channel_management_screen.dart';
+import 'tuner_editor.dart';
 import 'virtual_tuner_wizard.dart' as virtual_wizard;
-import 'virtual_tuner_editor.dart';
 
 class _AnimatedSyncIcon extends StatefulWidget {
   final bool isSyncing;
@@ -88,6 +87,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isLoadingTuners = true;
   List<EpgSource> _epgSources = [];
   bool _isLoadingEpgSources = true;
+  int _favoriteCount = 0;
+  bool _isBuildingFromFavorites = false;
 
   @override
   void initState() {
@@ -102,6 +103,78 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _selectedQuality = settings.defaultQuality;
     _loadTuners();
     _loadEpgSources();
+    _loadFavoriteCount();
+  }
+
+  Future<void> _loadFavoriteCount() async {
+    try {
+      final api = context.read<ApiService>();
+      final channels = await api.getChannels();
+      if (mounted) {
+        setState(() {
+          _favoriteCount = channels.where((c) => c.isFavorite).length;
+        });
+      }
+    } catch (e) {
+      // Ignore errors
+    }
+  }
+
+  Future<void> _buildFromFavorites() async {
+    final existingFavoritesTuner = _tuners.where((t) => t.createdFromFavorites).firstOrNull;
+    final isUpdate = existingFavoritesTuner != null;
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: Text(isUpdate ? 'Update Favorites Tuner?' : 'Create Favorites Tuner?', style: const TextStyle(color: Colors.white)),
+        content: Text(
+          isUpdate
+              ? 'This will replace all channels in "${existingFavoritesTuner.name}" with your current $_favoriteCount favorited channels.'
+              : 'Create a new virtual tuner with your $_favoriteCount favorited channels?',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+            child: Text(isUpdate ? 'Update' : 'Create', style: const TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    setState(() => _isBuildingFromFavorites = true);
+    try {
+      final api = context.read<ApiService>();
+      await api.createVirtualTunerFromFavorites();
+      await _loadTuners();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(isUpdate ? 'Favorites tuner updated!' : 'Favorites tuner created!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isBuildingFromFavorites = false);
+      }
+    }
   }
 
   Future<void> _loadEpgSources() async {
@@ -150,62 +223,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _editTuner(Playlist tuner) async {
-    if (tuner.type == 'VIRTUAL') {
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => VirtualTunerEditor(playlist: tuner),
-        ),
-      );
-      // Refresh in case they deleted channels or changed metadata that affects the count
-      _loadTuners();
-      return;
-    }
-
-    final controller = TextEditingController(text: tuner.urlPath);
-    final newUrl = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('Edit Tuner', style: TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: controller,
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(
-            labelText: 'Tuner IP Address',
-            labelStyle: TextStyle(color: Colors.white54),
-            filled: true,
-            fillColor: Color(0xFF0D0D0D),
-            border: OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, controller.text),
-            child: const Text('Save'),
-          ),
-        ],
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => TunerEditor(playlist: tuner),
       ),
     );
-
-    if (newUrl != null && newUrl.trim().isNotEmpty && newUrl.trim() != tuner.urlPath) {
-      setState(() => _isSaving = true);
-      try {
-        await context.read<ApiService>().updatePlaylist(tuner.id, newUrl.trim(), tuner.type, tuner.name);
-        await _loadTuners();
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tuner updated!'), backgroundColor: Colors.green));
-        }
-      } catch (e) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
-      } finally {
-        if (mounted) setState(() => _isSaving = false);
-      }
-    }
+    _loadTuners();
   }
 
   Future<void> _syncTuner(Playlist tuner) async {
@@ -618,6 +642,67 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       foregroundColor: Colors.white,
                     ),
                   ),
+                  const SizedBox(height: 24),
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1A1A1A),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.favorite, color: Colors.redAccent, size: 24),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'Build from Favorites ($_favoriteCount)',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Create a custom tuner from your favorite channels. You can update it anytime by favoriting new channels.',
+                          style: TextStyle(color: Colors.white60, fontSize: 14),
+                        ),
+                        const SizedBox(height: 16),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: _favoriteCount == 0 || _isBuildingFromFavorites ? null : _buildFromFavorites,
+                            icon: _isBuildingFromFavorites
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                                  )
+                                : Icon(
+                                    _tuners.any((t) => t.createdFromFavorites) ? Icons.refresh : Icons.add,
+                                    color: Colors.white,
+                                  ),
+                            label: Text(
+                              _tuners.any((t) => t.createdFromFavorites) ? 'Update Tuner' : 'Create Tuner',
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              backgroundColor: Colors.blueAccent,
+                              disabledBackgroundColor: Colors.grey.shade800,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                   const SizedBox(height: 32),
                   const Divider(color: Colors.white24),
                   const SizedBox(height: 16),
@@ -789,27 +874,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                     ),
                   ],
-                  const SizedBox(height: 32),
-                  const Text(
-                    'Channel Management',
-                    style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 12),
-                  ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(builder: (context) => const ChannelManagementScreen()),
-                      );
-                    },
-                    icon: const Icon(Icons.list_alt),
-                    label: const Text('Manage Channels & Logos'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-                      backgroundColor: Colors.purpleAccent,
-                      foregroundColor: Colors.white,
-                    ),
-                  ),
                 ],
               ),
             ),

@@ -86,8 +86,8 @@ class _VirtualTunerWizardState extends State<VirtualTunerWizard> {
         final tunerA = widget.availableTuners.firstWhere((t) => t.id == a.playlistId, orElse: () => Playlist(id: '', name: '', urlPath: '', type: ''));
         final tunerB = widget.availableTuners.firstWhere((t) => t.id == b.playlistId, orElse: () => Playlist(id: '', name: '', urlPath: '', type: ''));
         
-        final aIsLocal = tunerA.type == 'HDHR' || tunerA.type == 'M3U';
-        final bIsLocal = tunerB.type == 'HDHR' || tunerB.type == 'M3U';
+        final aIsLocal = tunerA.type == 'HDHOMERUN' || tunerA.type == 'M3U';
+        final bIsLocal = tunerB.type == 'HDHOMERUN' || tunerB.type == 'M3U';
         
         if (aIsLocal && !bIsLocal) return -1;
         if (!aIsLocal && bIsLocal) return 1;
