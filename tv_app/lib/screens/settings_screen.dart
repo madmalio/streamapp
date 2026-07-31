@@ -9,6 +9,63 @@ import 'channel_management_screen.dart';
 import 'virtual_tuner_wizard.dart' as virtual_wizard;
 import 'virtual_tuner_editor.dart';
 
+class _AnimatedSyncIcon extends StatefulWidget {
+  final bool isSyncing;
+  final Color color;
+
+  const _AnimatedSyncIcon({required this.isSyncing, this.color = Colors.blueAccent});
+
+  @override
+  State<_AnimatedSyncIcon> createState() => _AnimatedSyncIconState();
+}
+
+class _AnimatedSyncIconState extends State<_AnimatedSyncIcon> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _rotation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 1000),
+      vsync: this,
+    );
+    _rotation = Tween<double>(begin: 0, end: 1).animate(_controller);
+    if (widget.isSyncing) _controller.repeat();
+  }
+
+  @override
+  void didUpdateWidget(_AnimatedSyncIcon oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isSyncing && !_controller.isAnimating) {
+      _controller.repeat();
+    } else if (!widget.isSyncing && _controller.isAnimating) {
+      _controller.stop();
+      _controller.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _rotation,
+      builder: (context, child) {
+        return Transform.rotate(
+          angle: _rotation.value * 2 * 3.14159,
+          child: child,
+        );
+      },
+      child: Icon(Icons.sync, color: widget.color),
+    );
+  }
+}
+
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 
@@ -24,7 +81,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _m3uController;
   late final TextEditingController _m3uNameController;
   bool _isSaving = false;
-  bool _isSyncingEpg = false;
+  String? _syncingTunerId;
+  String? _syncingEpgSourceId;
   String _selectedQuality = 'Auto';
   List<Playlist> _tuners = [];
   bool _isLoadingTuners = true;
@@ -91,31 +149,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
-  Future<void> _syncEpg(String input) async {
-    if (input.isEmpty) return;
-
-    setState(() => _isSyncingEpg = true);
-    try {
-      final api = context.read<ApiService>();
-      await api.syncEpg(input);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('EPG Synced Successfully!'), backgroundColor: Colors.green),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error syncing EPG: $e'), backgroundColor: Colors.red),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isSyncingEpg = false);
-      }
-    }
-  }
-
   Future<void> _editTuner(Playlist tuner) async {
     if (tuner.type == 'VIRTUAL') {
       await Navigator.push(
@@ -176,14 +209,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _syncTuner(Playlist tuner) async {
-    setState(() => _isSaving = true);
+    setState(() => _syncingTunerId = tuner.id);
     try {
       await context.read<ApiService>().syncPlaylist(tuner.id);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${tuner.name} synced!'), backgroundColor: Colors.green));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error syncing ${tuner.name}: $e'), backgroundColor: Colors.red));
     } finally {
-      if (mounted) setState(() => _isSaving = false);
+      if (mounted) setState(() => _syncingTunerId = null);
     }
   }
 
@@ -312,14 +345,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _syncEpgSource(EpgSource source) async {
-    setState(() => _isSyncingEpg = true);
+    setState(() => _syncingEpgSourceId = source.id);
     try {
       await context.read<ApiService>().syncEpgSource(source.id);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${source.name} synced!'), backgroundColor: Colors.green));
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
     } finally {
-      if (mounted) setState(() => _isSyncingEpg = false);
+      if (mounted) setState(() => _syncingEpgSourceId = null);
     }
   }
 
@@ -611,8 +644,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 IconButton(
-                                  icon: const Icon(Icons.sync, color: Colors.blueAccent),
-                                  onPressed: () => _syncTuner(t),
+                                  icon: _AnimatedSyncIcon(
+                                    isSyncing: _syncingTunerId == t.id,
+                                    color: Colors.blueAccent,
+                                  ),
+                                  onPressed: _syncingTunerId != null ? null : () => _syncTuner(t),
                                 ),
                                 IconButton(
                                   icon: const Icon(Icons.edit, color: Colors.white70),
@@ -714,8 +750,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 IconButton(
-                                  icon: const Icon(Icons.sync, color: Colors.blueAccent),
-                                  onPressed: _isSyncingEpg ? null : () => _syncEpgSource(s),
+                                  icon: _AnimatedSyncIcon(
+                                    isSyncing: _syncingEpgSourceId == s.id,
+                                    color: Colors.blueAccent,
+                                  ),
+                                  onPressed: _syncingEpgSourceId != null ? null : () => _syncEpgSource(s),
                                 ),
                                 IconButton(
                                   icon: const Icon(Icons.edit, color: Colors.white70),

@@ -75,6 +75,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   bool _webrtcPlaying = true;
   bool _webrtcFullscreen = false;
   StreamSubscription<double>? _volumeSubscription;
+  double _lastNonZeroVolume = 100.0;
+  bool _wasMuted = false;
   
   bool _controlsVisible = true;
   bool _channelSwitchInProgress = false;
@@ -612,6 +614,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   Future<void> _initPlayer() async {
     final prefs = await SharedPreferences.getInstance();
     final savedVolume = prefs.getDouble('player_volume') ?? 100.0;
+    _lastNonZeroVolume = savedVolume > 0 ? savedVolume : 100.0;
 
     // Media Kit Engine Setup
     player = Player();
@@ -620,8 +623,20 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     await _configureNativeLowLatencyProfile();
     await player!.setVolume(savedVolume);
 
-    _volumeSubscription = player!.stream.volume.listen((volume) {
-      prefs.setDouble('player_volume', volume);
+    _volumeSubscription = player!.stream.volume.listen((volume) async {
+      if (volume == 0) {
+        _wasMuted = true;
+      } else if (_wasMuted) {
+        _wasMuted = false;
+        if (volume != _lastNonZeroVolume) {
+          await player!.setVolume(_lastNonZeroVolume);
+        }
+        _lastNonZeroVolume = _lastNonZeroVolume;
+        prefs.setDouble('player_volume', _lastNonZeroVolume);
+      } else {
+        _lastNonZeroVolume = volume;
+        prefs.setDouble('player_volume', volume);
+      }
     });
   }
 
