@@ -12,6 +12,13 @@ backend/*.out
 backend/vendor/
 backend/streamapp_hls/
 
+# Test scripts and binaries (not unit tests)
+test_*.go
+backend/test_*.go
+backend/testbin
+webrtc_test.html
+test_epg.gz
+
 # Flutter / Dart
 tv_app/.dart_tool/
 tv_app/.packages
