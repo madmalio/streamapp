@@ -153,21 +153,6 @@ class ApiService {
     }
   }
 
-  Future<void> generateVirtualTuner(String name, List<String> selectedChannels) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/virtual-tuners/generate'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'name': name,
-        'selected_channels': selectedChannels,
-      }),
-    ).timeout(const Duration(seconds: 30));
-
-    if (response.statusCode != 201 && response.statusCode != 200) {
-      throw Exception('Failed to create virtual tuner: ${response.body}');
-    }
-  }
-
   Future<Map<String, dynamic>> createVirtualTunerFromFavorites({String? name}) async {
     final body = <String, dynamic>{};
     if (name != null && name.isNotEmpty) {

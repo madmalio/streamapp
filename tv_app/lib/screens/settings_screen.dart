@@ -6,7 +6,6 @@ import '../services/api_service.dart';
 import '../models/playlist.dart';
 import '../models/epg_source.dart';
 import 'tuner_editor.dart';
-import 'virtual_tuner_wizard.dart' as virtual_wizard;
 
 class _AnimatedSyncIcon extends StatefulWidget {
   final bool isSyncing;
@@ -620,27 +619,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 16),
-                  ElevatedButton.icon(
-                    onPressed: () async {
-                      final result = await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => virtual_wizard.VirtualTunerWizard(availableTuners: _tuners),
-                        ),
-                      );
-                      if (result == true) {
-                        _loadTuners();
-                      }
-                    },
-                    icon: const Icon(Icons.build),
-                    label: const Text('Build Custom Tuner (DIY)'),
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                      backgroundColor: Colors.green,
-                      foregroundColor: Colors.white,
-                    ),
                   ),
                   const SizedBox(height: 24),
                   Container(

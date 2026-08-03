@@ -71,7 +71,6 @@ func main() {
 		api.Post("/playlists/{id}/sync", handlers.SyncPlaylist)
 
 		// Virtual Tuners
-		api.Post("/virtual-tuners/generate", handlers.GenerateVirtualTuner)
 		api.Post("/virtual-tuners/from-favorites", handlers.CreateFromFavorites)
 
 		// Channel Groups / Categories
