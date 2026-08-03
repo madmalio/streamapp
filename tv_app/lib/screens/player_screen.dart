@@ -133,11 +133,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _api = context.read<ApiService>();
     _liveEpg = widget.epgData;
 
-    // Debug: Log favorite status when player opens
-    print('🎬 DEBUG: Player opened for channel: ${_currentChannel.name}');
-    print('  isFavorite: $_isFavorite');
-    print('  channel.isFavorite: ${_currentChannel.isFavorite}');
-
     final settings = context.read<AppSettings>();
     _initAndBootstrap();
     _fetchCurrentProgram();

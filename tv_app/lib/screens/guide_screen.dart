@@ -98,16 +98,6 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
       final channels = await api.getChannels();
       final playlists = await api.getPlaylists();
       
-      // Debug: Check favorite status
-      final favoriteCount = channels.where((c) => c.isFavorite).length;
-      print('🔍 DEBUG: Loaded ${channels.length} channels, $favoriteCount are favorites');
-      if (favoriteCount > 0) {
-        final favorites = channels.where((c) => c.isFavorite).take(3).toList();
-        for (var fav in favorites) {
-          print('  ⭐ Favorite: ${fav.name} (id: ${fav.id})');
-        }
-      }
-      
       Map<String, ChannelEPG> epg = {};
       try {
         epg = await api.getLiveEpg();
@@ -258,11 +248,6 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
   }
 
   Future<void> _openChannel(Channel channel) async {
-    // Debug: Log channel favorite status when clicked
-    print('🎯 DEBUG: Opening channel: ${channel.name}');
-    print('  channel.isFavorite: ${channel.isFavorite}');
-    print('  channel.id: ${channel.id}');
-    
     // If we are opening the currently prewarmed channel, do NOT kill it!
     // PlayerScreen will adopt the exact same HLS Session ID from the backend.
     _prewarmTimer?.cancel();

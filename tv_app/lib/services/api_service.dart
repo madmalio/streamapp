@@ -64,16 +64,6 @@ class ApiService {
     final response = await http.get(Uri.parse('$baseUrl/channels'));
     if (response.statusCode == 200) {
       final List<dynamic> json = jsonDecode(response.body);
-      
-      // Debug: Check first few channels for is_favorite field
-      if (json.isNotEmpty) {
-        print('📡 DEBUG: Backend returned ${json.length} channels');
-        for (int i = 0; i < json.length && i < 5; i++) {
-          final ch = json[i];
-          print('  Channel ${i+1}: ${ch['name']} - is_favorite: ${ch['is_favorite']} (${ch['is_favorite'].runtimeType})');
-        }
-      }
-      
       return json.map((ch) => Channel.fromJson(ch)).toList();
     } else {
       throw Exception('Failed to load channels');
