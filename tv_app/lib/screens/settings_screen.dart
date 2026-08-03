@@ -5,6 +5,7 @@ import '../services/app_settings.dart';
 import '../services/api_service.dart';
 import '../models/playlist.dart';
 import '../models/epg_source.dart';
+import '../models/camera.dart';
 import 'tuner_editor.dart';
 
 class _AnimatedSyncIcon extends StatefulWidget {
@@ -88,6 +89,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _isLoadingEpgSources = true;
   int _favoriteCount = 0;
   bool _isBuildingFromFavorites = false;
+  List<Camera> _cameras = [];
+  bool _isLoadingCameras = true;
 
   @override
   void initState() {
@@ -103,6 +106,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _loadTuners();
     _loadEpgSources();
     _loadFavoriteCount();
+    _loadCameras();
+  }
+
+  Future<void> _loadCameras() async {
+    try {
+      final api = context.read<ApiService>();
+      final cameras = await api.getCameras();
+      if (mounted) {
+        setState(() {
+          _cameras = cameras;
+          _isLoadingCameras = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingCameras = false);
+      }
+    }
   }
 
   Future<void> _loadFavoriteCount() async {
@@ -206,6 +227,260 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _isLoadingTuners = false);
+      }
+    }
+  }
+
+  Future<void> _addCamera() async {
+    final nameController = TextEditingController();
+    final urlController = TextEditingController();
+    final locationController = TextEditingController();
+    bool isTesting = false;
+
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1A1A1A),
+          title: const Text('Add Camera', style: TextStyle(color: Colors.white)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Camera Name',
+                    labelStyle: TextStyle(color: Colors.white54),
+                    filled: true,
+                    fillColor: Color(0xFF0D0D0D),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: urlController,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'RTSP URL',
+                    hintText: 'rtsp://username:password@ip:port/stream',
+                    labelStyle: TextStyle(color: Colors.white54),
+                    hintStyle: TextStyle(color: Colors.white38),
+                    filled: true,
+                    fillColor: Color(0xFF0D0D0D),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: locationController,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Location (optional)',
+                    labelStyle: TextStyle(color: Colors.white54),
+                    filled: true,
+                    fillColor: Color(0xFF0D0D0D),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: isTesting ? null : () => Navigator.pop(ctx),
+              child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              onPressed: isTesting
+                  ? null
+                  : () async {
+                      if (nameController.text.isEmpty || urlController.text.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Name and RTSP URL are required')),
+                        );
+                        return;
+                      }
+
+                      setDialogState(() => isTesting = true);
+                      try {
+                        final api = context.read<ApiService>();
+                        final result = await api.addCamera(
+                          nameController.text.trim(),
+                          urlController.text.trim(),
+                          locationController.text.trim(),
+                        );
+                        if (mounted) {
+                          Navigator.pop(ctx, result);
+                        }
+                      } catch (e) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+                          );
+                        }
+                      } finally {
+                        if (mounted) {
+                          setDialogState(() => isTesting = false);
+                        }
+                      }
+                    },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+              child: isTesting
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text('Add', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (result != null && result['success'] == 'true') {
+      await _loadCameras();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Camera added successfully!'), backgroundColor: Colors.green),
+        );
+      }
+    }
+  }
+
+  Future<void> _editCamera(Camera camera) async {
+    final nameController = TextEditingController(text: camera.name);
+    final urlController = TextEditingController(text: camera.rtspUrl);
+    final locationController = TextEditingController(text: camera.location);
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('Edit Camera', style: TextStyle(color: Colors.white)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: 'Camera Name',
+                  labelStyle: TextStyle(color: Colors.white54),
+                  filled: true,
+                  fillColor: Color(0xFF0D0D0D),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: urlController,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: 'RTSP URL',
+                  labelStyle: TextStyle(color: Colors.white54),
+                  filled: true,
+                  fillColor: Color(0xFF0D0D0D),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: locationController,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: 'Location',
+                  labelStyle: TextStyle(color: Colors.white54),
+                  filled: true,
+                  fillColor: Color(0xFF0D0D0D),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
+            child: const Text('Save', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (result == true) {
+      try {
+        final api = context.read<ApiService>();
+        await api.updateCamera(
+          camera.id,
+          name: nameController.text.trim(),
+          rtspUrl: urlController.text.trim(),
+          location: locationController.text.trim(),
+        );
+        await _loadCameras();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Camera updated!'), backgroundColor: Colors.green),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          );
+        }
+      }
+    }
+  }
+
+  Future<void> _deleteCamera(Camera camera) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('Delete Camera?', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'Are you sure you want to delete "${camera.name}"?',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            child: const Text('Delete', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        final api = context.read<ApiService>();
+        await api.deleteCamera(camera.id);
+        await _loadCameras();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Camera deleted'), backgroundColor: Colors.green),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+          );
+        }
       }
     }
   }
@@ -466,7 +741,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 3,
+      length: 4,
       child: Scaffold(
         backgroundColor: const Color(0xFF0D0D0D),
         appBar: AppBar(
@@ -479,6 +754,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             tabs: [
               Tab(icon: Icon(Icons.dns), text: 'Server & Tuners'),
               Tab(icon: Icon(Icons.tv), text: 'Guide & Channels'),
+              Tab(icon: Icon(Icons.videocam), text: 'Cameras'),
               Tab(icon: Icon(Icons.play_circle_filled), text: 'Playback'),
             ],
           ),
@@ -856,7 +1132,112 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
             
-            // Tab 3: Playback
+            // Tab 3: Cameras
+            SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'RTSP Cameras',
+                        style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+                      ),
+                      ElevatedButton.icon(
+                        onPressed: _addCamera,
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add Camera'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blueAccent,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  if (_isLoadingCameras)
+                    const Center(child: CircularProgressIndicator())
+                  else if (_cameras.isEmpty)
+                    Container(
+                      padding: const EdgeInsets.all(40),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1A1A1A),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Column(
+                        children: [
+                          const Icon(Icons.videocam_off, color: Colors.white38, size: 48),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'No cameras added yet',
+                            style: TextStyle(color: Colors.white54, fontSize: 16),
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Add RTSP cameras to monitor them alongside your TV channels',
+                            style: TextStyle(color: Colors.white38, fontSize: 14),
+                            textAlign: TextAlign.center,
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    ..._cameras.map((camera) => Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1A1A1A),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.videocam, color: Colors.blueAccent, size: 32),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      camera.name,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    if (camera.location.isNotEmpty)
+                                      Text(
+                                        camera.location,
+                                        style: const TextStyle(color: Colors.white54, fontSize: 14),
+                                      ),
+                                    Text(
+                                      camera.rtspUrl,
+                                      style: const TextStyle(color: Colors.white38, fontSize: 12),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.edit, color: Colors.white70),
+                                onPressed: () => _editCamera(camera),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.redAccent),
+                                onPressed: () => _deleteCamera(camera),
+                              ),
+                            ],
+                          ),
+                        )),
+                ],
+              ),
+            ),
+            
+            // Tab 4: Playback
             SingleChildScrollView(
               padding: const EdgeInsets.all(24),
               child: Column(

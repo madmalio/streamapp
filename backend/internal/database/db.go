@@ -67,10 +67,20 @@ func InitDB(dbPath string) (*sql.DB, error) {
 			start_time DATETIME NOT NULL,
 			end_time DATETIME NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS cameras (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			rtsp_url TEXT NOT NULL,
+			location TEXT DEFAULT '',
+			is_enabled BOOLEAN DEFAULT 1,
+			sort_order INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
 		// Indexes for optimizing query operations
 		`CREATE INDEX IF NOT EXISTS idx_channels_playlist ON channels(playlist_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_channels_group ON channels(group_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_epg_channel_time ON epg_programs(channel_id, start_time, end_time);`,
+		`CREATE INDEX IF NOT EXISTS idx_cameras_sort_order ON cameras(sort_order);`,
 	}
 
 	for _, q := range queries {

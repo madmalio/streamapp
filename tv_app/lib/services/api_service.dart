@@ -4,6 +4,7 @@ import '../models/channel.dart';
 import '../models/epg_program.dart';
 import '../models/playlist.dart';
 import '../models/epg_source.dart';
+import '../models/camera.dart';
 
 class HlsStreamSession {
   final String url;
@@ -412,5 +413,74 @@ class ApiService {
       return 0.0;
     }
     return 0.0;
+  }
+
+  // Camera methods
+  Future<List<Camera>> getCameras() async {
+    final response = await http.get(Uri.parse('$baseUrl/cameras'));
+    if (response.statusCode == 200) {
+      final List<dynamic> json = jsonDecode(response.body);
+      return json.map((c) => Camera.fromJson(c)).toList();
+    } else {
+      throw Exception('Failed to load cameras');
+    }
+  }
+
+  Future<Map<String, dynamic>> addCamera(String name, String rtspUrl, String location) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/cameras'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'name': name,
+        'rtsp_url': rtspUrl,
+        'location': location,
+      }),
+    );
+    
+    final data = jsonDecode(response.body);
+    if (response.statusCode == 201 && data['success'] == true) {
+      return data;
+    } else {
+      throw Exception(data['message'] ?? 'Failed to add camera');
+    }
+  }
+
+  Future<Map<String, dynamic>> updateCamera(String id, {String? name, String? rtspUrl, String? location, bool? isEnabled}) async {
+    final body = <String, dynamic>{};
+    if (name != null) body['name'] = name;
+    if (rtspUrl != null) body['rtsp_url'] = rtspUrl;
+    if (location != null) body['location'] = location;
+    if (isEnabled != null) body['is_enabled'] = isEnabled;
+
+    final response = await http.put(
+      Uri.parse('$baseUrl/cameras/$id'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(body),
+    );
+    
+    final data = jsonDecode(response.body);
+    if (response.statusCode == 200 && data['success'] == true) {
+      return data;
+    } else {
+      throw Exception(data['message'] ?? 'Failed to update camera');
+    }
+  }
+
+  Future<void> deleteCamera(String id) async {
+    final response = await http.delete(Uri.parse('$baseUrl/cameras/$id'));
+    if (response.statusCode != 200) {
+      throw Exception('Failed to delete camera');
+    }
+  }
+
+  Future<void> reorderCameras(List<String> cameraIds) async {
+    final response = await http.put(
+      Uri.parse('$baseUrl/cameras/reorder'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'camera_ids': cameraIds}),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Failed to reorder cameras');
+    }
   }
 }

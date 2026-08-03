@@ -84,6 +84,13 @@ func main() {
 		api.Put("/channels/{id}/visibility", handlers.UpdateChannelVisibility)
 		api.Put("/channels/{id}/favorite", handlers.UpdateChannelFavorite)
 
+		// Cameras
+		api.Get("/cameras", handlers.GetCameras)
+		api.Post("/cameras", handlers.AddCamera)
+		api.Put("/cameras/{id}", handlers.UpdateCamera)
+		api.Delete("/cameras/{id}", handlers.DeleteCamera)
+		api.Put("/cameras/reorder", handlers.ReorderCameras)
+
 		// EPG
 		api.Get("/epg/live", handlers.GetLiveEPG)
 		api.Get("/epg/current/{id}", handlers.GetCurrentProgram)

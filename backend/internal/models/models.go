@@ -50,3 +50,14 @@ type EPGProgram struct {
 	EndTime     time.Time `json:"end_time"`
 	PosterURL   string    `json:"poster_url"`
 }
+
+// Camera represents an RTSP camera stream.
+type Camera struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	RTSPUrl   string    `json:"rtsp_url"`
+	Location  string    `json:"location"`
+	IsEnabled bool      `json:"is_enabled"`
+	SortOrder int       `json:"sort_order"`
+	CreatedAt time.Time `json:"created_at"`
+}
