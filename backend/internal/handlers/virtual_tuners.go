@@ -80,13 +80,14 @@ func GenerateVirtualTuner(w http.ResponseWriter, r *http.Request) {
 	for _, sourceChanID := range channelsToCopy {
 		// Fetch original channel and its group name
 		row := tx.QueryRow(`
-			SELECT c.name, c.stream_url, c.logo_url, cg.name 
+			SELECT c.name, c.stream_url, c.logo_url, cg.name, c.is_favorite
 			FROM channels c 
 			LEFT JOIN channel_groups cg ON c.group_id = cg.id 
 			WHERE c.id = ?`, sourceChanID)
 			
 		var name, streamURL, logoURL, groupName sql.NullString
-		if err := row.Scan(&name, &streamURL, &logoURL, &groupName); err != nil {
+		var isFavoriteRaw interface{}
+		if err := row.Scan(&name, &streamURL, &logoURL, &groupName, &isFavoriteRaw); err != nil {
 			if err == sql.ErrNoRows {
 				continue // Skip if not found
 			}
@@ -110,11 +111,26 @@ func GenerateVirtualTuner(w http.ResponseWriter, r *http.Request) {
 			groupCache[gn] = groupID
 		}
 
+		// Convert is_favorite from SQLite boolean
+		isFavorite := 0
+		if isFavoriteRaw != nil {
+			switch v := isFavoriteRaw.(type) {
+			case int64:
+				if v == 1 {
+					isFavorite = 1
+				}
+			case bool:
+				if v {
+					isFavorite = 1
+				}
+			}
+		}
+
 		newChannelID := uuid.New().String()
 		_, err = tx.Exec(`
-			INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, source_channel_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, newChannelID, playlistID, groupID, name, streamURL, logoURL, channelNumber, "", sourceChanID)
+			INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, source_channel_id, is_favorite)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, newChannelID, playlistID, groupID, name, streamURL, logoURL, channelNumber, "", sourceChanID, isFavorite)
 		if err != nil {
 			http.Error(w, "Failed to insert virtual channel", http.StatusInternalServerError)
 			return
@@ -307,8 +323,8 @@ func CreateFromFavorites(w http.ResponseWriter, r *http.Request) {
 		groupID := groupCache[fc.GroupName]
 		newChannelID := uuid.New().String()
 		_, err = tx.Exec(`
-			INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, source_channel_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, source_channel_id, is_favorite)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
 		`, newChannelID, playlistID, groupID, fc.Name, fc.StreamURL, fc.LogoURL, channelNumber, fc.GuideNum, fc.ID)
 		if err != nil {
 			http.Error(w, "Failed to insert virtual channel", http.StatusInternalServerError)
