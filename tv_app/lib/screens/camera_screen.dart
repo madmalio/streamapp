@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../models/camera.dart';
 import '../services/api_service.dart';
 import '../widgets/camera_tile.dart';
+import '../widgets/fullscreen_camera_view.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -68,29 +69,9 @@ class _CameraScreenState extends State<CameraScreen> {
   Widget build(BuildContext context) {
     // Fullscreen mode
     if (_fullscreenCamera != null) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        body: Stack(
-          children: [
-            CameraTile(
-              camera: _fullscreenCamera!,
-              fullscreen: true,
-            ),
-            // Close button
-            Positioned(
-              top: 16,
-              right: 16,
-              child: IconButton(
-                icon: const Icon(
-                  Icons.close,
-                  color: Colors.white,
-                  size: 32,
-                ),
-                onPressed: _exitFullscreen,
-              ),
-            ),
-          ],
-        ),
+      return FullscreenCameraView(
+        camera: _fullscreenCamera!,
+        onClose: _exitFullscreen,
       );
     }
 

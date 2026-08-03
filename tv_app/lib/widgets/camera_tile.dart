@@ -6,13 +6,11 @@ import '../models/camera.dart';
 class CameraTile extends StatefulWidget {
   final Camera camera;
   final VoidCallback? onTap;
-  final bool fullscreen;
 
   const CameraTile({
     super.key,
     required this.camera,
     this.onTap,
-    this.fullscreen = false,
   });
 
   @override
@@ -108,10 +106,7 @@ class _CameraTileState extends State<CameraTile> {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: Container(
-          decoration: BoxDecoration(
-            color: Colors.black,
-            border: Border.all(color: Colors.white24, width: 1),
-          ),
+          color: Colors.black,
           child: Stack(
             fit: StackFit.expand,
             children: [
