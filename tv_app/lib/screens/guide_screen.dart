@@ -10,6 +10,7 @@ import '../services/api_service.dart';
 import '../services/app_settings.dart';
 import 'player_screen.dart';
 import 'settings_screen.dart';
+import 'camera_screen.dart';
 
 class GuideScreen extends StatefulWidget {
   const GuideScreen({super.key});
@@ -766,6 +767,17 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
                       Channel? target = _channels.where((c) => c.id == lastChannelId).firstOrNull;
                       target ??= _channels.first;
                       _openChannel(target);
+                    },
+                  ),
+                  const SizedBox(height: 50),
+                  IconButton(
+                    icon: const Icon(Icons.videocam, size: 32, color: Colors.white54),
+                    tooltip: 'Cameras',
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const CameraScreen()),
+                      );
                     },
                   ),
                   const SizedBox(height: 50),
