@@ -97,6 +97,17 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
       final appSettings = Provider.of<AppSettings>(context, listen: false);
       final channels = await api.getChannels();
       final playlists = await api.getPlaylists();
+      
+      // Debug: Check favorite status
+      final favoriteCount = channels.where((c) => c.isFavorite).length;
+      print('🔍 DEBUG: Loaded ${channels.length} channels, $favoriteCount are favorites');
+      if (favoriteCount > 0) {
+        final favorites = channels.where((c) => c.isFavorite).take(3).toList();
+        for (var fav in favorites) {
+          print('  ⭐ Favorite: ${fav.name} (id: ${fav.id})');
+        }
+      }
+      
       Map<String, ChannelEPG> epg = {};
       try {
         epg = await api.getLiveEpg();
