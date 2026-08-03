@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -25,32 +24,11 @@ class _CameraTileState extends State<CameraTile> {
   bool _hasError = false;
   String _errorMessage = '';
   bool _isMuted = true;
-  bool _showOverlays = true;
-  Timer? _hideTimer;
 
   @override
   void initState() {
     super.initState();
     _initPlayer();
-    _startHideTimer();
-  }
-
-  void _startHideTimer() {
-    _hideTimer?.cancel();
-    _hideTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted) {
-        setState(() {
-          _showOverlays = false;
-        });
-      }
-    });
-  }
-
-  void _showOverlaysTemporarily() {
-    setState(() {
-      _showOverlays = true;
-    });
-    _startHideTimer();
   }
 
   Future<void> _initPlayer() async {
@@ -108,7 +86,6 @@ class _CameraTileState extends State<CameraTile> {
 
   @override
   void dispose() {
-    _hideTimer?.cancel();
     _player.dispose();
     super.dispose();
   }
@@ -124,166 +101,144 @@ class _CameraTileState extends State<CameraTile> {
 
   @override
   Widget build(BuildContext context) {
-    return MouseRegion(
-      onEnter: (_) => _showOverlaysTemporarily(),
-      onHover: (_) => _showOverlaysTemporarily(),
-      child: GestureDetector(
-        onTap: () {
-          _showOverlaysTemporarily();
-          widget.onTap?.call();
-        },
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Container(
-            color: Colors.black,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                // Video Player
-                if (_isInitialized && !_hasError)
-                  Video(
-                    controller: _videoController,
-                    controls: NoVideoControls,
-                  )
-                else if (_hasError)
-                  // Error State
-                  Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(
-                          Icons.error_outline,
-                          color: Colors.redAccent,
-                          size: 48,
-                        ),
-                        const SizedBox(height: 8),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16),
-                          child: Text(
-                            _errorMessage,
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 12,
-                            ),
-                            textAlign: TextAlign.center,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        ElevatedButton.icon(
-                          onPressed: _retry,
-                          icon: const Icon(Icons.refresh),
-                          label: const Text('Retry'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blueAccent,
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 8,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                else
-                  // Loading State
-                  const Center(
-                    child: CircularProgressIndicator(
-                      color: Colors.blueAccent,
-                    ),
-                  ),
-
-                // Camera Name Overlay (Top Left)
-                AnimatedOpacity(
-                  opacity: _showOverlays ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 300),
-                  child: Positioned(
-                    top: 8,
-                    left: 8,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
+    return GestureDetector(
+      onTap: widget.onTap,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          color: Colors.black,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // Video Player
+              if (_isInitialized && !_hasError)
+                Video(
+                  controller: _videoController,
+                  controls: NoVideoControls,
+                )
+              else if (_hasError)
+                // Error State
+                Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(
+                        Icons.error_outline,
+                        color: Colors.redAccent,
+                        size: 48,
                       ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.7),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        widget.camera.name,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-
-                // Mute/Unmute Button (Top Right)
-                AnimatedOpacity(
-                  opacity: _showOverlays ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 300),
-                  child: Positioned(
-                    top: 8,
-                    right: 8,
-                    child: Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        onTap: () {
-                          _showOverlaysTemporarily();
-                          _toggleMute();
-                        },
-                        borderRadius: BorderRadius.circular(4),
-                        child: Container(
-                          padding: const EdgeInsets.all(6),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(0.7),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Icon(
-                            _isMuted ? Icons.volume_off : Icons.volume_up,
-                            color: _isMuted ? Colors.white54 : Colors.white,
-                            size: 20,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-
-                // Location Overlay (Bottom Left)
-                if (widget.camera.location.isNotEmpty)
-                  AnimatedOpacity(
-                    opacity: _showOverlays ? 1.0 : 0.0,
-                    duration: const Duration(milliseconds: 300),
-                    child: Positioned(
-                      bottom: 8,
-                      left: 8,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.7),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
+                      const SizedBox(height: 8),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: Text(
-                          widget.camera.location,
+                          _errorMessage,
                           style: const TextStyle(
                             color: Colors.white70,
                             fontSize: 12,
                           ),
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
                         ),
+                      ),
+                      const SizedBox(height: 12),
+                      ElevatedButton.icon(
+                        onPressed: _retry,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Retry'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blueAccent,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              else
+                // Loading State
+                const Center(
+                  child: CircularProgressIndicator(
+                    color: Colors.blueAccent,
+                  ),
+                ),
+
+              // Camera Name Overlay (Top Left)
+              Positioned(
+                top: 8,
+                left: 8,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.7),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    widget.camera.name,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+
+              // Mute/Unmute Button (Top Right)
+              Positioned(
+                top: 8,
+                right: 8,
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    onTap: _toggleMute,
+                    borderRadius: BorderRadius.circular(4),
+                    child: Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.7),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Icon(
+                        _isMuted ? Icons.volume_off : Icons.volume_up,
+                        color: _isMuted ? Colors.white54 : Colors.white,
+                        size: 20,
                       ),
                     ),
                   ),
-              ],
-            ),
+                ),
+              ),
+
+              // Location Overlay (Bottom Left)
+              if (widget.camera.location.isNotEmpty)
+                Positioned(
+                  bottom: 8,
+                  left: 8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.7),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      widget.camera.location,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ),
