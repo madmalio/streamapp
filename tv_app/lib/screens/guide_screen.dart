@@ -13,7 +13,14 @@ import 'settings_screen.dart';
 import 'camera_screen.dart';
 
 class GuideScreen extends StatefulWidget {
-  const GuideScreen({super.key});
+  final int initialTab;
+  final bool playLastChannel;
+
+  const GuideScreen({
+    super.key,
+    this.initialTab = 0,
+    this.playLastChannel = false,
+  });
 
   @override
   State<GuideScreen> createState() => _GuideScreenState();
@@ -75,6 +82,7 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
   @override
   void initState() {
     super.initState();
+    _currentTabIndex = widget.initialTab;
     _primeAutoRecommendation();
     if (!_prewarmEnabled) {
       _prewarmToken = 0;
@@ -128,6 +136,16 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
       });
 
       _initTabController();
+
+      // Auto-play last channel if requested
+      if (widget.playLastChannel && filteredChannels.isNotEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          final lastChannelId = context.read<AppSettings>().lastChannelId;
+          Channel? target = filteredChannels.where((c) => c.id == lastChannelId).firstOrNull;
+          target ??= filteredChannels.first;
+          _openChannel(target);
+        });
+      }
     } catch (e) {
       setState(() => _isLoading = false);
       // Handled simply for now
@@ -137,7 +155,7 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
   void _initTabController() {
     _tabController?.dispose();
     final tabCount = _playlists.isEmpty ? 1 : _playlists.length;
-    _tabController = TabController(length: tabCount, vsync: this);
+    _tabController = TabController(length: tabCount, vsync: this, initialIndex: _currentTabIndex.clamp(0, tabCount - 1));
     _tabController!.addListener(_onTabChanged);
   }
 
