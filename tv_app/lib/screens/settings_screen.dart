@@ -391,18 +391,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           urlController.text.trim(),
                           locationController.text.trim(),
                         );
-                        if (mounted) {
-                          Navigator.pop(ctx, result);
+                        // Pop dialog first, then handle result
+                        if (ctx.mounted) {
+                          Navigator.of(ctx).pop(result);
                         }
                       } catch (e) {
-                        if (mounted) {
+                        setDialogState(() => isAdding = false);
+                        if (context.mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
                           );
-                        }
-                      } finally {
-                        if (mounted) {
-                          setDialogState(() => isAdding = false);
                         }
                       }
                     },
