@@ -62,12 +62,28 @@
     - Drag-to-reorder (virtual tuners only)
   - Removed redundant "Manage Channels & Logos" button from Tab 2 (Guide & Channels), making Tab 2 EPG-focused only.
   - Deleted obsolete files: `virtual_tuner_editor.dart` and `channel_management_screen.dart`.
+  - **Fixed Favorites Preservation on Tuner Resync**: Modified `chanState` struct and `getExistingChannelState()` to include `is_favorite` field. Updated all sync functions (`syncM3U`, `syncXtream`, `syncHDHomeRun`) to preserve favorite status when channels are deleted and re-inserted during tuner sync.
+  - **Fixed Guide Data for Virtual Channels**: Modified `syncEPGSource()` to exclude virtual channels (those with `source_channel_id != ''`) from EPG matching. After EPG sync completes, virtual channels now get their EPG data copied from source channels. Frontend EPG lookups now use `channel.id` instead of `sourceChannelId`.
+  - **Added Gzip Support for EPG Sources**: Backend now detects and decompresses gzip-compressed XMLTV files (by `.gz` URL extension or `Content-Encoding: gzip` header) before parsing. Fixes sync failures for compressed EPG sources like Pluto TV.
+  - **Removed DIY Tuner Wizard**: Removed `virtual_tuner_wizard.dart`, the "Build Custom Tuner (DIY)" button, and the `/virtual-tuners/generate` backend endpoint. Kept the simpler "Build from Favorites" workflow.
+  - **Hide Favorites Category on Favorites Tuner**: Added `isFavoritesTuner` parameter to `_buildGroupedChannelRows()` and `_buildEpgGrid()` in `guide_screen.dart`. When viewing a tuner created from favorites (`p.createdFromFavorites == true`), the Favorites category grouping is skipped to eliminate redundancy.
+  - **RTSP Camera Support**: Added full camera management system for RTSP security cameras:
+    - **Backend**: New `cameras` table with id, name, rtsp_url, location, is_enabled, sort_order, created_at. CRUD handlers (`GetCameras`, `AddCamera`, `UpdateCamera`, `DeleteCamera`, `ReorderCameras`). RTSP URL validation (must start with `rtsp://` or `rtsps://).
+    - **Frontend**: New `Camera` model, camera API methods in `api_service.dart`, new "Cameras" tab (Tab 3) in settings screen for camera management.
+    - **Camera Viewing**: `CameraScreen` with adaptive grid layout (2x2 for ≤4 cameras, 3x3 for 5-9, 4 columns for more). `CameraTile` widget for individual camera feeds using direct RTSP playback via `media_kit` (no backend transcoding). `FullscreenCameraView` widget with audio controls, gradient overlays, and auto-hiding controls (3 second timeout).
+    - **Connectivity Testing**: RTSP URL tests run client-side using Dart `Socket.connect`, allowing testing from the Flutter app's network location rather than the backend server.
+    - **Navigation**: Added sidebar to camera screen matching guide screen layout. `GuideScreen` now accepts `initialTab` and `playLastChannel` parameters for cross-screen navigation.
 
 ## Current Problem (End of Session)
-- **Status**: Tuner management is now consolidated into a single unified editor. Virtual tuners support drag-to-reorder; all tuners support channel metadata/logo/visibility editing. Pluto and external providers remain stable via proxy routing.
-- **Pending/Open**: We reverted the custom persistent volume slider in `player_screen.dart` due to state conflicts; this needs a proper structural fix if we decide to remove the hover-only volume control later.
+- **Status**: Full camera management and viewing system is operational. Tuner management is consolidated. Guide data and favorites are preserved correctly during resyncs.
+- **Pending/Open**: 
+  - Custom persistent volume slider in `player_screen.dart` reverted due to state conflicts; needs structural fix if hover-only volume control is to be removed.
+  - Camera auto-reconnect not implemented (streams show error state if connection drops).
+  - Camera grid doesn't pause streams when scrolling off-screen (performance consideration for many cameras).
 
 ## Next Steps (Recommended)
 1. Run short soak tests across Pluto, Plex, and Tubi (channel changes during ad windows) and track crash count + recovery count.
 2. Continue testing the Smart Categorization Engine with different HDHomeRun setups to ensure all local network variants (e.g. 'NBC 5') are caught by the regex patterns in `category.go`.
 3. If returning to the volume slider, refactor `PlayerScreen` to prevent total widget tree rebuilds on volume state changes.
+4. Consider implementing camera auto-reconnect for dropped RTSP streams.
+5. Consider implementing visibility-based stream pausing in camera grid for performance with many cameras.
