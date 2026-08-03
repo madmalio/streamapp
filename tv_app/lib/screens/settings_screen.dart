@@ -264,6 +264,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 16),
                 TextField(
                   controller: urlController,
+                  onChanged: (_) => setDialogState(() {}),
                   style: const TextStyle(color: Colors.white),
                   decoration: const InputDecoration(
                     labelText: 'RTSP URL',
