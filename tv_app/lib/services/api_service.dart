@@ -426,6 +426,16 @@ class ApiService {
     }
   }
 
+  Future<Map<String, dynamic>> testCameraConnection(String rtspUrl) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/cameras/test'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'rtsp_url': rtspUrl}),
+    ).timeout(const Duration(seconds: 15));
+    
+    return jsonDecode(response.body);
+  }
+
   Future<Map<String, dynamic>> addCamera(String name, String rtspUrl, String location) async {
     final response = await http.post(
       Uri.parse('$baseUrl/cameras'),

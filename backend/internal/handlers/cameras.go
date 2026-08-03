@@ -291,15 +291,57 @@ func testRTSPConnectivity(rtspUrl string) error {
 		}
 	}
 
-	// Try to establish TCP connection with timeout
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 5*time.Second)
+	log.Printf("Testing RTSP connectivity to %s:%s...", host, port)
+
+	// Try to establish TCP connection with 10 second timeout
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 10*time.Second)
 	if err != nil {
-		return fmt.Errorf("cannot connect to %s:%s - %v", host, port, err)
+		return fmt.Errorf("cannot connect to %s:%s - %v (timeout may be too short or camera may be offline)", host, port, err)
 	}
 	defer conn.Close()
 
 	log.Printf("RTSP connectivity test successful for %s", rtspUrl)
 	return nil
+}
+
+// TestCameraConnection tests connectivity to an RTSP camera without saving it.
+func TestCameraConnection(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RTSPUrl string `json:"rtsp_url"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	if req.RTSPUrl == "" {
+		writeError(w, http.StatusBadRequest, "RTSP URL is required")
+		return
+	}
+
+	// Validate RTSP URL format
+	if err := validateRTSPUrl(req.RTSPUrl); err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"success": false,
+			"message": fmt.Sprintf("Invalid RTSP URL: %v", err),
+		})
+		return
+	}
+
+	// Test RTSP connectivity
+	if err := testRTSPConnectivity(req.RTSPUrl); err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"success": false,
+			"message": fmt.Sprintf("Connection failed: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Connection successful! Camera is reachable.",
+	})
 }
 
 // Helper functions

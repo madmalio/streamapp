@@ -236,6 +236,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final urlController = TextEditingController();
     final locationController = TextEditingController();
     bool isTesting = false;
+    bool isAdding = false;
+    String? testResult;
+    bool? testSuccess;
 
     final result = await showDialog<Map<String, String>>(
       context: context,
@@ -272,6 +275,82 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     border: OutlineInputBorder(),
                   ),
                 ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: (isTesting || isAdding || urlController.text.isEmpty)
+                        ? null
+                        : () async {
+                            setDialogState(() {
+                              isTesting = true;
+                              testResult = null;
+                              testSuccess = null;
+                            });
+                            try {
+                              final api = context.read<ApiService>();
+                              final response = await api.testCameraConnection(urlController.text.trim());
+                              setDialogState(() {
+                                testResult = response['message'] ?? 'Unknown result';
+                                testSuccess = response['success'] == true;
+                              });
+                            } catch (e) {
+                              setDialogState(() {
+                                testResult = 'Test failed: $e';
+                                testSuccess = false;
+                              });
+                            } finally {
+                              setDialogState(() => isTesting = false);
+                            }
+                          },
+                    icon: isTesting
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Icon(Icons.wifi, color: Colors.white),
+                    label: Text(
+                      isTesting ? 'Testing...' : 'Test Connection',
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.orange,
+                    ),
+                  ),
+                ),
+                if (testResult != null) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: testSuccess == true ? Colors.green.withOpacity(0.2) : Colors.red.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: testSuccess == true ? Colors.green : Colors.red,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          testSuccess == true ? Icons.check_circle : Icons.error,
+                          color: testSuccess == true ? Colors.green : Colors.red,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            testResult!,
+                            style: TextStyle(
+                              color: testSuccess == true ? Colors.green : Colors.red,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 16),
                 TextField(
                   controller: locationController,
@@ -289,11 +368,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           actions: [
             TextButton(
-              onPressed: isTesting ? null : () => Navigator.pop(ctx),
+              onPressed: (isTesting || isAdding) ? null : () => Navigator.pop(ctx),
               child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
             ),
             ElevatedButton(
-              onPressed: isTesting
+              onPressed: (isTesting || isAdding)
                   ? null
                   : () async {
                       if (nameController.text.isEmpty || urlController.text.isEmpty) {
@@ -303,7 +382,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         return;
                       }
 
-                      setDialogState(() => isTesting = true);
+                      setDialogState(() => isAdding = true);
                       try {
                         final api = context.read<ApiService>();
                         final result = await api.addCamera(
@@ -322,12 +401,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         }
                       } finally {
                         if (mounted) {
-                          setDialogState(() => isTesting = false);
+                          setDialogState(() => isAdding = false);
                         }
                       }
                     },
               style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent),
-              child: isTesting
+              child: isAdding
                   ? const SizedBox(
                       width: 16,
                       height: 16,
