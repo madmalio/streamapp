@@ -258,6 +258,11 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
   }
 
   Future<void> _openChannel(Channel channel) async {
+    // Debug: Log channel favorite status when clicked
+    print('🎯 DEBUG: Opening channel: ${channel.name}');
+    print('  channel.isFavorite: ${channel.isFavorite}');
+    print('  channel.id: ${channel.id}');
+    
     // If we are opening the currently prewarmed channel, do NOT kill it!
     // PlayerScreen will adopt the exact same HLS Session ID from the backend.
     _prewarmTimer?.cancel();
