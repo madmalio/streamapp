@@ -87,7 +87,6 @@ func main() {
 		// Cameras
 		api.Get("/cameras", handlers.GetCameras)
 		api.Post("/cameras", handlers.AddCamera)
-		api.Post("/cameras/test", handlers.TestCameraConnection)
 		api.Put("/cameras/{id}", handlers.UpdateCamera)
 		api.Delete("/cameras/{id}", handlers.DeleteCamera)
 		api.Put("/cameras/reorder", handlers.ReorderCameras)

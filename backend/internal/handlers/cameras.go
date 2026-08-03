@@ -4,12 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
-	"net"
 	"net/http"
 	"net/url"
-	"strconv"
-	"time"
 
 	"streamapp/backend/internal/database"
 	"streamapp/backend/internal/models"
@@ -66,15 +62,6 @@ func AddCamera(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Test RTSP connectivity
-	if err := testRTSPConnectivity(req.RTSPUrl); err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success": false,
-			"message": fmt.Sprintf("Cannot connect to camera: %v", err),
-		})
-		return
-	}
-
 	// Get max sort_order
 	var maxOrder sql.NullInt64
 	_ = database.DB.QueryRow("SELECT MAX(sort_order) FROM cameras").Scan(&maxOrder)
@@ -125,19 +112,6 @@ func UpdateCamera(w http.ResponseWriter, r *http.Request) {
 		if err := validateRTSPUrl(req.RTSPUrl); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("Invalid RTSP URL: %v", err))
 			return
-		}
-
-		// Test connectivity if URL changed
-		var existingUrl string
-		err := database.DB.QueryRow("SELECT rtsp_url FROM cameras WHERE id = ?", id).Scan(&existingUrl)
-		if err == nil && existingUrl != req.RTSPUrl {
-			if err := testRTSPConnectivity(req.RTSPUrl); err != nil {
-				writeJSON(w, http.StatusOK, map[string]interface{}{
-					"success": false,
-					"message": fmt.Sprintf("Cannot connect to camera: %v", err),
-				})
-				return
-			}
 		}
 	}
 
@@ -274,77 +248,7 @@ func validateRTSPUrl(rawUrl string) error {
 	return nil
 }
 
-// testRTSPConnectivity attempts to connect to the RTSP server.
-func testRTSPConnectivity(rtspUrl string) error {
-	u, err := url.Parse(rtspUrl)
-	if err != nil {
-		return fmt.Errorf("invalid URL: %v", err)
-	}
-
-	host := u.Hostname()
-	port := u.Port()
-	if port == "" {
-		if u.Scheme == "rtsps" {
-			port = "322"
-		} else {
-			port = "554"
-		}
-	}
-
-	log.Printf("Testing RTSP connectivity to %s:%s...", host, port)
-
-	// Try to establish TCP connection with 10 second timeout
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 10*time.Second)
-	if err != nil {
-		return fmt.Errorf("cannot connect to %s:%s - %v (timeout may be too short or camera may be offline)", host, port, err)
-	}
-	defer conn.Close()
-
-	log.Printf("RTSP connectivity test successful for %s", rtspUrl)
-	return nil
-}
-
-// TestCameraConnection tests connectivity to an RTSP camera without saving it.
-func TestCameraConnection(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		RTSPUrl string `json:"rtsp_url"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-
-	if req.RTSPUrl == "" {
-		writeError(w, http.StatusBadRequest, "RTSP URL is required")
-		return
-	}
-
-	// Validate RTSP URL format
-	if err := validateRTSPUrl(req.RTSPUrl); err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success": false,
-			"message": fmt.Sprintf("Invalid RTSP URL: %v", err),
-		})
-		return
-	}
-
-	// Test RTSP connectivity
-	if err := testRTSPConnectivity(req.RTSPUrl); err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"success": false,
-			"message": fmt.Sprintf("Connection failed: %v", err),
-		})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"message": "Connection successful! Camera is reachable.",
-	})
-}
-
-// Helper functions
+// joinUpdates joins update clauses for SQL queries.
 func joinUpdates(updates []string) string {
 	result := ""
 	for i, u := range updates {
@@ -355,6 +259,3 @@ func joinUpdates(updates []string) string {
 	}
 	return result
 }
-
-// Unused import prevention
-var _ = strconv.Itoa

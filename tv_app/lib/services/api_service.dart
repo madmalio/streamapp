@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import '../models/channel.dart';
 import '../models/epg_program.dart';
@@ -427,13 +428,51 @@ class ApiService {
   }
 
   Future<Map<String, dynamic>> testCameraConnection(String rtspUrl) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/cameras/test'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'rtsp_url': rtspUrl}),
-    ).timeout(const Duration(seconds: 15));
-    
-    return jsonDecode(response.body);
+    try {
+      // Parse RTSP URL
+      final uri = Uri.parse(rtspUrl);
+      if (uri.scheme != 'rtsp' && uri.scheme != 'rtsps') {
+        return {
+          'success': false,
+          'message': 'URL must start with rtsp:// or rtsps://',
+        };
+      }
+
+      final host = uri.host;
+      final port = uri.hasPort ? uri.port : (uri.scheme == 'rtsps' ? 322 : 554);
+
+      if (host.isEmpty) {
+        return {
+          'success': false,
+          'message': 'URL must include a host',
+        };
+      }
+
+      // Test TCP connection from client
+      try {
+        final socket = await Socket.connect(host, port, timeout: Duration(seconds: 5));
+        await socket.close();
+        return {
+          'success': true,
+          'message': 'Connection successful! Camera is reachable.',
+        };
+      } on SocketException catch (e) {
+        return {
+          'success': false,
+          'message': 'Cannot connect to $host:$port - ${e.message}',
+        };
+      } on Exception catch (e) {
+        return {
+          'success': false,
+          'message': 'Connection failed: $e',
+        };
+      }
+    } catch (e) {
+      return {
+        'success': false,
+        'message': 'Invalid URL format: $e',
+      };
+    }
   }
 
   Future<Map<String, dynamic>> addCamera(String name, String rtspUrl, String location) async {
