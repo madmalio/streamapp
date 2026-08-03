@@ -240,7 +240,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     String? testResult;
     bool? testSuccess;
 
-    final result = await showDialog<Map<String, String>>(
+    final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
@@ -418,7 +418,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
 
-    if (result != null && result['success'] == 'true') {
+    if (result != null && result['success'] == true) {
       await _loadCameras();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
