@@ -505,7 +505,7 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
     );
   }
 
-  List<Widget> _buildGroupedChannelRows(List<Channel> channelsList, {required String fallbackGroupName}) {
+  List<Widget> _buildGroupedChannelRows(List<Channel> channelsList, {required String fallbackGroupName, bool isFavoritesTuner = false}) {
     if (channelsList.isEmpty) return const [];
     
     final Map<String, List<Channel>> groups = {};
@@ -514,10 +514,12 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
       groups.putIfAbsent(groupName, () => []).add(c);
     }
 
-    // Add Favorites as a special category if there are any favorites
-    final favoriteChannels = channelsList.where((c) => c.isFavorite).toList();
-    if (favoriteChannels.isNotEmpty) {
-      groups['Favorites'] = favoriteChannels;
+    // Add Favorites as a special category if there are any favorites (unless we're already on the favorites tuner)
+    if (!isFavoritesTuner) {
+      final favoriteChannels = channelsList.where((c) => c.isFavorite).toList();
+      if (favoriteChannels.isNotEmpty) {
+        groups['Favorites'] = favoriteChannels;
+      }
     }
 
     if (groups.length <= 1) {
@@ -543,17 +545,19 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
     return rows;
   }
 
-  Widget _buildEpgGrid(String title, List<Channel> gridChannels, {required double availableHeight, required String fallbackGroupName}) {
+  Widget _buildEpgGrid(String title, List<Channel> gridChannels, {required double availableHeight, required String fallbackGroupName, bool isFavoritesTuner = false}) {
     final Map<String, List<Channel>> groups = {};
     for (var c in gridChannels) {
       final groupName = (c.normalizedCategory.isNotEmpty) ? c.normalizedCategory : fallbackGroupName;
       groups.putIfAbsent(groupName, () => []).add(c);
     }
 
-    // Add Favorites as a special category if there are any favorites
-    final favoriteChannels = gridChannels.where((c) => c.isFavorite).toList();
-    if (favoriteChannels.isNotEmpty) {
-      groups['Favorites'] = favoriteChannels;
+    // Add Favorites as a special category if there are any favorites (unless we're already on the favorites tuner)
+    if (!isFavoritesTuner) {
+      final favoriteChannels = gridChannels.where((c) => c.isFavorite).toList();
+      if (favoriteChannels.isNotEmpty) {
+        groups['Favorites'] = favoriteChannels;
+      }
     }
 
     final sortedCategories = groups.keys.toList()..sort((a, b) {
@@ -698,7 +702,7 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
                                               children: [
                                                 if (tunerChannels.isNotEmpty) 
                                                   _buildChannelRow('All ${p.name} Channels', tunerChannels),
-                                                ..._buildGroupedChannelRows(tunerChannels, fallbackGroupName: 'Other ${p.name} Channels'),
+                                                ..._buildGroupedChannelRows(tunerChannels, fallbackGroupName: 'Other ${p.name} Channels', isFavoritesTuner: p.createdFromFavorites),
                                                 const SizedBox(height: 40),
                                               ],
                                             ),
@@ -706,7 +710,7 @@ class _GuideScreenState extends State<GuideScreen> with TickerProviderStateMixin
                                               crossAxisAlignment: CrossAxisAlignment.start,
                                               children: [
                                                 if (tunerChannels.isNotEmpty)
-                                                  _buildEpgGrid('${p.name} Guide', tunerChannels, availableHeight: guideViewportHeight, fallbackGroupName: 'Other ${p.name} Channels'),
+                                                  _buildEpgGrid('${p.name} Guide', tunerChannels, availableHeight: guideViewportHeight, fallbackGroupName: 'Other ${p.name} Channels', isFavoritesTuner: p.createdFromFavorites),
                                               ],
                                             ),
                                           ],
