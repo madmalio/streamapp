@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"log"
@@ -1464,7 +1465,18 @@ func syncEPGSource(xmltvURL string, sourceID string) error {
 				return err
 			}
 			defer resp.Body.Close()
-			r = resp.Body
+			
+			// Check if response is gzipped (by URL extension or Content-Encoding header)
+			var reader io.Reader = resp.Body
+			if strings.HasSuffix(xmltvURL, ".gz") || resp.Header.Get("Content-Encoding") == "gzip" {
+				gz, err := gzip.NewReader(resp.Body)
+				if err != nil {
+					return fmt.Errorf("failed to decompress gzip: %w", err)
+				}
+				defer gz.Close()
+				reader = gz
+			}
+			r = reader
 		} else {
 			return fmt.Errorf("EPG URL must start with http or https")
 		}
