@@ -1197,13 +1197,14 @@ func parseSQLiteBool(val interface{}) bool {
 }
 
 type chanState struct {
-	ID       string
-	LogoURL  string
-	IsHidden bool
+	ID         string
+	LogoURL    string
+	IsHidden   bool
+	IsFavorite bool
 }
 
 func getExistingChannelState(pID string) (map[string]chanState, error) {
-	rows, err := database.DB.Query("SELECT id, name, logo_url, is_hidden FROM channels WHERE playlist_id = ?", pID)
+	rows, err := database.DB.Query("SELECT id, name, logo_url, is_hidden, is_favorite FROM channels WHERE playlist_id = ?", pID)
 	if err != nil {
 		return nil, err
 	}
@@ -1213,12 +1214,13 @@ func getExistingChannelState(pID string) (map[string]chanState, error) {
 	for rows.Next() {
 		var id, name string
 		var logoOpt sql.NullString
-		var isHiddenRaw interface{}
-		if err := rows.Scan(&id, &name, &logoOpt, &isHiddenRaw); err == nil {
+		var isHiddenRaw, isFavoriteRaw interface{}
+		if err := rows.Scan(&id, &name, &logoOpt, &isHiddenRaw, &isFavoriteRaw); err == nil {
 			state[name] = chanState{
-				ID:       id,
-				LogoURL:  logoOpt.String,
-				IsHidden: parseSQLiteBool(isHiddenRaw),
+				ID:         id,
+				LogoURL:    logoOpt.String,
+				IsHidden:   parseSQLiteBool(isHiddenRaw),
+				IsFavorite: parseSQLiteBool(isFavoriteRaw),
 			}
 		}
 	}
@@ -1230,6 +1232,7 @@ func applyExistingState(ch *models.Channel, state map[string]chanState) {
 		ch.ID = existing.ID
 		ch.LogoURL = existing.LogoURL
 		ch.IsHidden = existing.IsHidden
+		ch.IsFavorite = existing.IsFavorite
 	}
 }
 
@@ -1298,7 +1301,7 @@ func syncM3U(pID, urlPath string) error {
 		}
 	}
 
-	stmt, err := tx.Prepare("INSERT OR REPLACE INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT OR REPLACE INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden, is_favorite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
@@ -1315,8 +1318,12 @@ func syncM3U(pID, urlPath string) error {
 		if ch.IsHidden {
 			isHiddenInt = 1
 		}
+		isFavoriteInt := 0
+		if ch.IsFavorite {
+			isFavoriteInt = 1
+		}
 		uniqueChID := pID + "-" + ch.ID
-		_, err = stmt.Exec(uniqueChID, pID, gID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt)
+		_, err = stmt.Exec(uniqueChID, pID, gID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt, isFavoriteInt)
 		if err != nil {
 			return err
 		}
@@ -1355,7 +1362,7 @@ func syncXtream(pID, urlPath, username, password string) error {
 		}
 	}
 
-	chanStmt, err := tx.Prepare("INSERT OR REPLACE INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	chanStmt, err := tx.Prepare("INSERT OR REPLACE INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden, is_favorite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
@@ -1367,8 +1374,12 @@ func syncXtream(pID, urlPath, username, password string) error {
 		if ch.IsHidden {
 			isHiddenInt = 1
 		}
+		isFavoriteInt := 0
+		if ch.IsFavorite {
+			isFavoriteInt = 1
+		}
 		uniqueChID := pID + "-" + ch.ID
-		_, err = chanStmt.Exec(uniqueChID, pID, ch.GroupID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt)
+		_, err = chanStmt.Exec(uniqueChID, pID, ch.GroupID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt, isFavoriteInt)
 		if err != nil {
 			return err
 		}
@@ -1410,7 +1421,7 @@ func syncHDHomeRun(pID, urlPath string) error {
 		}
 	}
 
-	stmt, err := tx.Prepare("INSERT OR REPLACE INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	stmt, err := tx.Prepare("INSERT OR REPLACE INTO channels (id, playlist_id, group_id, name, stream_url, logo_url, channel_number, guide_number, is_hidden, is_favorite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 	if err != nil {
 		return err
 	}
@@ -1428,8 +1439,12 @@ func syncHDHomeRun(pID, urlPath string) error {
 		if ch.IsHidden {
 			isHiddenInt = 1
 		}
+		isFavoriteInt := 0
+		if ch.IsFavorite {
+			isFavoriteInt = 1
+		}
 		uniqueChID := pID + "-" + ch.ID
-		_, err = stmt.Exec(uniqueChID, pID, gID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt)
+		_, err = stmt.Exec(uniqueChID, pID, gID, ch.Name, ch.StreamURL, ch.LogoURL, ch.ChannelNumber, ch.GuideNumber, isHiddenInt, isFavoriteInt)
 		if err != nil {
 			return err
 		}
@@ -1455,8 +1470,8 @@ func syncEPGSource(xmltvURL string, sourceID string) error {
 		}
 	}
 
-	// Fetch channels for matching
-	rows, err := database.DB.Query("SELECT id, name, channel_number, guide_number, logo_url FROM channels")
+	// Fetch channels for matching (exclude virtual channels - they inherit EPG via source_channel_id)
+	rows, err := database.DB.Query("SELECT id, name, channel_number, guide_number, logo_url FROM channels WHERE source_channel_id = ''")
 	if err != nil {
 		return err
 	}
@@ -1632,6 +1647,38 @@ func syncEPGSource(xmltvURL string, sourceID string) error {
 				tx.Exec("INSERT INTO channel_groups (id, playlist_id, name) VALUES (?, ?, ?)", gID, pID, catName)
 			}
 			tx.Exec("UPDATE channels SET group_id = ? WHERE id = ?", gID, chanID)
+		}
+	}
+
+	// Copy EPG data from source channels to virtual channels
+	virtualRows, err := tx.Query("SELECT id, source_channel_id FROM channels WHERE source_channel_id != ''")
+	if err == nil {
+		defer virtualRows.Close()
+		for virtualRows.Next() {
+			var virtualID, sourceID string
+			if err := virtualRows.Scan(&virtualID, &sourceID); err == nil {
+				// Delete old EPG for this virtual channel
+				tx.Exec("DELETE FROM epg_programs WHERE channel_id = ?", virtualID)
+				// Copy all EPG programs from source to virtual
+				sourceEpgRows, err := tx.Query(`
+					SELECT source_id, title, description, start_time, end_time, poster_url
+					FROM epg_programs WHERE channel_id = ?
+				`, sourceID)
+				if err == nil {
+					for sourceEpgRows.Next() {
+						var srcID, title, description, startTime, endTime string
+						var posterURL sql.NullString
+						if sourceEpgRows.Scan(&srcID, &title, &description, &startTime, &endTime, &posterURL) == nil {
+							newID := uuid.New().String()
+							tx.Exec(`
+								INSERT INTO epg_programs (id, source_id, channel_id, title, description, start_time, end_time, poster_url)
+								VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+							`, newID, srcID, virtualID, title, description, startTime, endTime, posterURL.String)
+						}
+					}
+					sourceEpgRows.Close()
+				}
+			}
 		}
 	}
 
